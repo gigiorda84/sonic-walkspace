@@ -230,19 +230,32 @@ function getCMSTours() {
       return null;
     }
     
-    // Filter only published tours
-    const publishedTours = parsed.filter(tour => 
+    // Filter valid tours (show all during development, only published in production)
+    const validTours = parsed.filter(tour => 
       tour && 
       typeof tour === 'object' && 
       tour.slug && 
       tour.title && 
-      Array.isArray(tour.regions) &&
-      tour.published === true // Only published tours
+      Array.isArray(tour.regions)
     );
     
-    if (publishedTours.length !== parsed.length) {
-      console.log(`Filtered ${parsed.length - publishedTours.length} unpublished tours`);
-    }
+    // In development, show all tours. In production, show only published tours
+    const publishedTours = process.env.NODE_ENV === 'production' 
+      ? validTours.filter(tour => tour.published === true)
+      : validTours;
+    
+    // Debug: log audio data in tracks
+    publishedTours.forEach(tour => {
+      console.log(`Tour ${tour.title} (${tour.id}):`, {
+        locale: tour.locale,
+        regions: tour.regions?.length,
+        tracks: tour.tracks ? Object.keys(tour.tracks) : [],
+        audioRegions: tour.tracks?.[tour.locale] ? 
+          Object.keys(tour.tracks[tour.locale]).filter(regionId => 
+            tour.tracks[tour.locale][regionId]?.audioDataUrl
+          ) : []
+      });
+    });
     
     return publishedTours.length > 0 ? publishedTours : null;
   } catch (error) { 
@@ -293,17 +306,40 @@ export default function SonicWalkscapeWebPlayer(){
         tourImageDataUrl: cmsTour.tourImageDataUrl || '',
         locale: tourLocale,
         parentTourId: cmsTour.parentTourId,
-        regions: cmsTour.regions.map((r: any) => ({
-          id: r.id || `region-${Math.random()}`,
-          name: cmsTour.tracks?.[tourLocale]?.[r.id]?.title || `Punto ${r.sort || 1}`,
-          description: cmsTour.tracks?.[tourLocale]?.[r.id]?.description || '',
-          transcript: cmsTour.tracks?.[tourLocale]?.[r.id]?.transcript || '',
-          imageDataUrl: cmsTour.tracks?.[tourLocale]?.[r.id]?.imageDataUrl || '',
-          center: { lat: r.lat || 45.07, lng: r.lng || 7.68 },
-          radiusM: r.radiusM || 120,
-          sort: r.sort || 1,
-          track: cmsTour.tracks?.[tourLocale]?.[r.id] || { kind: 'tone', frequency: 440 }
-        }))
+        regions: cmsTour.regions.map((r: any) => {
+          const cmsTrack = cmsTour.tracks?.[tourLocale]?.[r.id] || {};
+          
+          // Debug: log track conversion for all regions
+          if (cmsTrack.title || cmsTrack.description || cmsTrack.transcript || cmsTrack.audioDataUrl || cmsTrack.imageDataUrl) {
+            console.log(`Converting region ${r.id}:`, {
+              regionId: r.id,
+              hasTitle: !!cmsTrack.title,
+              hasDescription: !!cmsTrack.description,
+              hasTranscript: !!cmsTrack.transcript,
+              hasImageDataUrl: !!cmsTrack.imageDataUrl,
+              hasAudioDataUrl: !!cmsTrack.audioDataUrl,
+              title: cmsTrack.title,
+              description: cmsTrack.description?.substring(0, 50) + '...',
+              transcript: cmsTrack.transcript?.substring(0, 50) + '...'
+            });
+          }
+          
+          return {
+            id: r.id || `region-${Math.random()}`,
+            name: cmsTrack.title || `Punto ${r.sort || 1}`,
+            description: cmsTrack.description || '',
+            transcript: cmsTrack.transcript || '',
+            imageDataUrl: cmsTrack.imageDataUrl || '',
+            center: { lat: r.lat || 45.07, lng: r.lng || 7.68 },
+            radiusM: r.radiusM || 120,
+            sort: r.sort || 1,
+            track: {
+              ...cmsTrack,
+              kind: cmsTrack.audioDataUrl ? 'audio' : 'tone',
+              frequency: cmsTrack.frequency || 440
+            }
+          };
+        })
       } as any;
     } catch (error) {
       console.error('Error converting CMS tour to player format:', error, cmsTour);
@@ -372,19 +408,10 @@ export default function SonicWalkscapeWebPlayer(){
           // Play audio for the region
           const track = enteredRegion.track;
           if (track) {
-            if (track.kind === 'tone' && track.frequency) {
-              playTone(track.frequency);
-            } else if (track.audioDataUrl) {
+            if (track.audioDataUrl) {
               playAudio(track.audioDataUrl);
-            } else {
-              // Try to find audio data in CMS tracks
-              const cmsTour = findCMSTour();
-              if (cmsTour) {
-                const cmsTrack = cmsTour.tracks?.[locale]?.[enteredRegion.id];
-                if (cmsTrack?.audioDataUrl) {
-                  playAudio(cmsTrack.audioDataUrl);
-                }
-              }
+            } else if (track.frequency) {
+              playTone(track.frequency);
             }
           }
         }
@@ -395,38 +422,63 @@ export default function SonicWalkscapeWebPlayer(){
     return ()=> navigator.geolocation.clearWatch(id); 
   }, [usingGPS, TOUR, locale, activeRegionId, cmsTours]);
 
-  // Initialize audio context
-  useEffect(() => {
+  // Initialize audio context after user interaction
+  const initAudioContext = () => {
     if (IS_CLIENT && !audioContext) {
-      const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
-      setAudioContext(ctx);
+      try {
+        const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+        setAudioContext(ctx);
+        console.log('AudioContext initialized successfully');
+        return ctx;
+      } catch (error) {
+        console.error('Failed to initialize AudioContext:', error);
+        return null;
+      }
     }
-  }, [audioContext]);
+    return audioContext;
+  };
 
   // Function to play tone
   const playTone = (frequency: number, duration: number = 2000) => {
-    if (!audioContext) return;
+    const ctx = initAudioContext();
+    if (!ctx) {
+      console.log('AudioContext not available for tone playback');
+      return;
+    }
     
-    const oscillator = audioContext.createOscillator();
-    const gainNode = audioContext.createGain();
+    // Resume context if suspended
+    if (ctx.state === 'suspended') {
+      ctx.resume();
+    }
+    
+    const oscillator = ctx.createOscillator();
+    const gainNode = ctx.createGain();
     
     oscillator.connect(gainNode);
-    gainNode.connect(audioContext.destination);
+    gainNode.connect(ctx.destination);
     
-    oscillator.frequency.setValueAtTime(frequency, audioContext.currentTime);
+    oscillator.frequency.setValueAtTime(frequency, ctx.currentTime);
     oscillator.type = 'sine';
     
-    gainNode.gain.setValueAtTime(0, audioContext.currentTime);
-    gainNode.gain.linearRampToValueAtTime(0.1, audioContext.currentTime + 0.1);
-    gainNode.gain.linearRampToValueAtTime(0, audioContext.currentTime + duration);
+    gainNode.gain.setValueAtTime(0, ctx.currentTime);
+    gainNode.gain.linearRampToValueAtTime(0.1, ctx.currentTime + 0.1);
+    gainNode.gain.linearRampToValueAtTime(0, ctx.currentTime + duration / 1000);
     
-    oscillator.start(audioContext.currentTime);
-    oscillator.stop(audioContext.currentTime + duration);
+    oscillator.start(ctx.currentTime);
+    oscillator.stop(ctx.currentTime + duration / 1000);
   };
 
   // Function to play audio file
   const playAudio = (audioDataUrl: string) => {
-    if (!audioDataUrl) return;
+    console.log('playAudio called with:', audioDataUrl ? audioDataUrl.substring(0, 50) + '...' : 'null');
+    
+    if (!audioDataUrl) {
+      console.log('No audioDataUrl provided');
+      return;
+    }
+    
+    // Initialize AudioContext to ensure browser permissions
+    initAudioContext();
     
     // Stop current audio if playing
     if (currentAudio) {
@@ -437,19 +489,50 @@ export default function SonicWalkscapeWebPlayer(){
     const audio = new Audio(audioDataUrl);
     audio.volume = 0.7;
     
-    audio.onplay = () => setIsPlaying(true);
-    audio.onpause = () => setIsPlaying(false);
-    audio.onended = () => setIsPlaying(false);
+    audio.onloadstart = () => {
+      console.log('Audio loading started');
+    };
+    audio.oncanplay = () => {
+      console.log('Audio can start playing');
+    };
+    audio.onplay = () => {
+      console.log('Audio started playing');
+      setIsPlaying(true);
+    };
+    audio.onpause = () => {
+      console.log('Audio paused');
+      setIsPlaying(false);
+    };
+    audio.onended = () => {
+      console.log('Audio ended');
+      setIsPlaying(false);
+    };
     audio.onerror = (e) => {
       console.error('Audio playback error:', e);
+      console.error('Audio error details:', audio.error);
       setIsPlaying(false);
     };
     
     setCurrentAudio(audio);
-    audio.play().catch(err => {
-      console.error('Failed to play audio:', err);
-      setIsPlaying(false);
-    });
+    console.log('Attempting to play audio...');
+    
+    // Try to play with better error handling
+    const playPromise = audio.play();
+    if (playPromise !== undefined) {
+      playPromise
+        .then(() => {
+          console.log('Audio play promise resolved');
+        })
+        .catch(err => {
+          console.error('Failed to play audio:', err);
+          setIsPlaying(false);
+          
+          // If autoplay is blocked, suggest user interaction
+          if (err.name === 'NotAllowedError') {
+            console.log('Autoplay blocked - user interaction required');
+          }
+        });
+    }
   };
 
   // Function to stop current audio
@@ -474,20 +557,23 @@ export default function SonicWalkscapeWebPlayer(){
       
       // Play audio for the region
       const track = r.track;
+      console.log('Region track data:', {
+        regionId: r.id,
+        hasTrack: !!track,
+        hasAudioDataUrl: !!track?.audioDataUrl,
+        hasFrequency: !!track?.frequency,
+        audioDataUrlLength: track?.audioDataUrl?.length
+      });
+      
       if (track) {
-        if (track.kind === 'tone' && track.frequency) {
-          playTone(track.frequency);
-        } else if (track.audioDataUrl) {
+        if (track.audioDataUrl) {
+          console.log('Playing audio for region:', r.id);
           playAudio(track.audioDataUrl);
+        } else if (track.frequency) {
+          console.log('Playing tone for region:', r.id);
+          playTone(track.frequency);
         } else {
-          // Try to find audio data in CMS tracks
-          const cmsTour = findCMSTour();
-          if (cmsTour) {
-            const cmsTrack = cmsTour.tracks?.[locale]?.[r.id];
-            if (cmsTrack?.audioDataUrl) {
-              playAudio(cmsTrack.audioDataUrl);
-            }
-          }
+          console.log('No audio found for region:', r.id);
         }
       }
     }
@@ -526,15 +612,6 @@ export default function SonicWalkscapeWebPlayer(){
       return '🔊 Tono audio';
     }
     
-    // Check CMS tracks
-    const cmsTour = findCMSTour();
-    if (cmsTour) {
-      const cmsTrack = cmsTour.tracks?.[locale]?.[region.id];
-      if (cmsTrack?.audioDataUrl) {
-        return '🎵 Audio disponibile';
-      }
-    }
-    
     return '🔇 Nessun audio';
   };
 
@@ -561,6 +638,42 @@ export default function SonicWalkscapeWebPlayer(){
               Apri CMS
             </span>
           </button>
+          <button 
+            className="rounded-xl bg-green-800/50 hover:bg-green-700/50 px-4 py-2 text-sm transition-all duration-200 hover:scale-105" 
+            onClick={() => {
+              const ctx = initAudioContext();
+              if (ctx && ctx.state === 'suspended') {
+                ctx.resume().then(() => {
+                  console.log('AudioContext resumed');
+                });
+              }
+              console.log('AudioContext status:', ctx?.state);
+            }}
+          >
+            <span className="flex items-center gap-2">
+              <span className="w-2 h-2 rounded-full bg-green-400"></span>
+              Init Audio
+            </span>
+          </button>
+          <button 
+            className="rounded-xl bg-red-800/50 hover:bg-red-700/50 px-4 py-2 text-sm transition-all duration-200 hover:scale-105" 
+            onClick={() => {
+              console.log('=== DEBUG AUDIO DATA ===');
+              console.log('AudioContext state:', audioContext?.state);
+              console.log('Current tour:', TOUR);
+              console.log('CMS tours:', cmsTours);
+              console.log('Current region:', nowPlaying);
+              if (nowPlaying?.track) {
+                console.log('Current region track:', nowPlaying.track);
+              }
+              console.log('=== END DEBUG ===');
+            }}
+          >
+            <span className="flex items-center gap-2">
+              <span className="w-2 h-2 rounded-full bg-red-400"></span>
+              Debug Audio
+            </span>
+          </button>
           <select 
             className="rounded-xl bg-neutral-800/50 border border-neutral-700/50 px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/50 transition-all duration-200" 
             value={selectedTourIndex}
@@ -568,7 +681,7 @@ export default function SonicWalkscapeWebPlayer(){
           >
             {availableTours.map((tour, index) => (
               <option key={index} value={index}>
-                {tour.title} {tour.locale ? `(${tour.locale.split('-')[0].toUpperCase()})` : ''}
+                {tour.title} {tour.locale ? `(${tour.locale.split('-')[0].toUpperCase()})` : ''} {!tour.published ? '[Bozza]' : ''}
               </option>
             ))}
           </select>

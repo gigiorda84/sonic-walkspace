@@ -464,10 +464,148 @@ export default function PageCMSContent() {
       // Save to localStorage for player access
       if (IS_CLIENT) {
         try {
-          // Save all tours, even if incomplete
-          localStorage.setItem('WS_CMS_TOURS', JSON.stringify(updated));
+          // Check localStorage size before saving
+          const dataToSave = JSON.stringify(updated);
+          const dataSize = new Blob([dataToSave]).size;
+          const maxSize = 5 * 1024 * 1024; // 5MB limit
+          
+          console.log(`Data size to save: ${(dataSize / 1024 / 1024).toFixed(2)}MB`);
+          
+          if (dataSize > maxSize) {
+            console.warn('Data too large for localStorage, attempting to clean up...');
+            
+            // Try to clean up old data by removing large media files
+            const cleanedTours = updated.map(tour => {
+              const cleanedTour = { ...tour };
+              if (cleanedTour.tracks) {
+                Object.keys(cleanedTour.tracks).forEach(locale => {
+                  Object.keys(cleanedTour.tracks[locale]).forEach(regionId => {
+                    const track = cleanedTour.tracks[locale][regionId];
+                    // Keep only essential data, remove large media files
+                    if (track.audioDataUrl && track.audioDataUrl.length > 100000) {
+                      console.log(`Removing large audio file from ${regionId}`);
+                      delete track.audioDataUrl;
+                      track.audioFilename = track.audioFilename || 'removed-large-file.mp3';
+                    }
+                    if (track.imageDataUrl && track.imageDataUrl.length > 100000) {
+                      console.log(`Removing large image file from ${regionId}`);
+                      delete track.imageDataUrl;
+                      track.imageFilename = track.imageFilename || 'removed-large-file.jpg';
+                    }
+                  });
+                });
+              }
+              return cleanedTour;
+            });
+            
+            const cleanedData = JSON.stringify(cleanedTours);
+            const cleanedSize = new Blob([cleanedData]).size;
+            
+            console.log(`Cleaned data size: ${(cleanedSize / 1024 / 1024).toFixed(2)}MB`);
+            
+            if (cleanedSize <= maxSize) {
+              localStorage.setItem('WS_CMS_TOURS', cleanedData);
+              console.log('Tours saved to localStorage after cleanup');
+            } else {
+              // If still too large, save only essential data
+              const essentialTours = updated.map(tour => ({
+                id: tour.id,
+                title: tour.title,
+                description: tour.description,
+                locale: tour.locale,
+                published: tour.published,
+                regions: tour.regions?.map(r => ({
+                  id: r.id,
+                  name: r.name,
+                  lat: r.lat,
+                  lng: r.lng,
+                  radiusM: r.radiusM,
+                  sort: r.sort
+                })),
+                tracks: tour.tracks ? Object.keys(tour.tracks).reduce((acc, locale) => {
+                  acc[locale] = Object.keys(tour.tracks[locale]).reduce((regionAcc, regionId) => {
+                    const track = tour.tracks[locale][regionId];
+                    regionAcc[regionId] = {
+                      title: track.title,
+                      description: track.description,
+                      transcript: track.transcript,
+                      frequency: track.frequency,
+                      audioFilename: track.audioFilename,
+                      imageFilename: track.imageFilename
+                    };
+                    return regionAcc;
+                  }, {});
+                  return acc;
+                }, {}) : {}
+              }));
+              
+              localStorage.setItem('WS_CMS_TOURS', JSON.stringify(essentialTours));
+              console.log('Tours saved to localStorage with essential data only');
+            }
+          } else {
+            // Data is small enough, save normally
+            localStorage.setItem('WS_CMS_TOURS', dataToSave);
+            console.log('Tours saved to localStorage successfully');
+          }
+          
+          // Debug: log the updated tour data
+          const updatedTour = updated.find(t => t.id === selectedId);
+          if (updatedTour) {
+            console.log('Updated tour data:', {
+              id: updatedTour.id,
+              title: updatedTour.title,
+              regions: updatedTour.regions?.length,
+              tracks: updatedTour.tracks ? Object.keys(updatedTour.tracks) : [],
+              sampleTrack: updatedTour.tracks?.[updatedTour.locale || 'it-IT'] ? 
+                Object.keys(updatedTour.tracks[updatedTour.locale || 'it-IT'])[0] : null
+            });
+          }
         } catch (err) {
           console.error('Failed to save tours to localStorage:', err);
+          
+          // If quota exceeded, try to clear some space
+          if (err.name === 'QuotaExceededError') {
+            console.log('Attempting to clear localStorage space...');
+            try {
+              // Clear old data and try again with essential data only
+              const essentialTours = updated.map(tour => ({
+                id: tour.id,
+                title: tour.title,
+                description: tour.description,
+                locale: tour.locale,
+                published: tour.published,
+                regions: tour.regions?.map(r => ({
+                  id: r.id,
+                  name: r.name,
+                  lat: r.lat,
+                  lng: r.lng,
+                  radiusM: r.radiusM,
+                  sort: r.sort
+                })),
+                tracks: tour.tracks ? Object.keys(tour.tracks).reduce((acc, locale) => {
+                  acc[locale] = Object.keys(tour.tracks[locale]).reduce((regionAcc, regionId) => {
+                    const track = tour.tracks[locale][regionId];
+                    regionAcc[regionId] = {
+                      title: track.title,
+                      description: track.description,
+                      transcript: track.transcript,
+                      frequency: track.frequency,
+                      audioFilename: track.audioFilename,
+                      imageFilename: track.imageFilename
+                    };
+                    return regionAcc;
+                  }, {});
+                  return acc;
+                }, {}) : {}
+              }));
+              
+              localStorage.setItem('WS_CMS_TOURS', JSON.stringify(essentialTours));
+              console.log('Tours saved to localStorage with essential data only after quota error');
+            } catch (retryErr) {
+              console.error('Failed to save even essential data:', retryErr);
+              alert('Errore: Impossibile salvare i dati. Prova a rimuovere alcuni file audio o immagini per liberare spazio.');
+            }
+          }
         }
       }
       return updated;
@@ -693,17 +831,28 @@ export default function PageCMSContent() {
   };
 
   const updateTrackField = (regionId: string, field: string, value: string) => {
+    console.log(`Updating track field: ${regionId}.${field} = "${value}"`);
+    
     updateTour((t: any) => {
       if (!t.tracks) t.tracks = {};
       const currentLocale = t.locale || 'it-IT';
       if (!t.tracks[currentLocale]) t.tracks[currentLocale] = {};
       if (!t.tracks[currentLocale][regionId]) t.tracks[currentLocale][regionId] = {};
       t.tracks[currentLocale][regionId][field] = value;
+      
+      console.log(`Updated track data for ${regionId}:`, t.tracks[currentLocale][regionId]);
     });
   };
 
   const onUploadMp3 = async (regionId: string, file: File | undefined) => {
     if (!file || !tour) return;
+    
+    // Check file size (limit to 2MB for audio)
+    const maxSize = 2 * 1024 * 1024; // 2MB
+    if (file.size > maxSize) {
+      alert(`File troppo grande! Il file audio deve essere inferiore a 2MB. Dimensione attuale: ${(file.size / 1024 / 1024).toFixed(2)}MB`);
+      return;
+    }
     
     try {
       // Convert to data URL for local playback
@@ -735,6 +884,13 @@ export default function PageCMSContent() {
   const onUploadImage = async (regionId: string, file: File | undefined) => {
     if (!file || !tour) return;
     
+    // Check file size (limit to 1MB for images)
+    const maxSize = 1 * 1024 * 1024; // 1MB
+    if (file.size > maxSize) {
+      alert(`File troppo grande! L'immagine deve essere inferiore a 1MB. Dimensione attuale: ${(file.size / 1024 / 1024).toFixed(2)}MB`);
+      return;
+    }
+    
     try {
       // Convert to data URL for local display
       const dataUrl = await new Promise<string>((resolve, reject) => {
@@ -765,6 +921,13 @@ export default function PageCMSContent() {
   const onUploadTourImage = async (file: File | undefined) => {
     if (!file || !tour) return;
     
+    // Check file size (limit to 1MB for tour images)
+    const maxSize = 1 * 1024 * 1024; // 1MB
+    if (file.size > maxSize) {
+      alert(`File troppo grande! L'immagine del tour deve essere inferiore a 1MB. Dimensione attuale: ${(file.size / 1024 / 1024).toFixed(2)}MB`);
+      return;
+    }
+    
     try {
       // Convert to data URL for local display
       const dataUrl = await new Promise<string>((resolve, reject) => {
@@ -785,6 +948,60 @@ export default function PageCMSContent() {
     } catch (err) {
       console.error("Tour image upload error:", err);
       alert("Errore durante il caricamento dell'immagine del tour. Riprova.");
+    }
+  };
+
+  const clearLocalStorage = () => {
+    if (confirm('Sei sicuro di voler pulire il localStorage? Questo rimuoverà tutti i file audio e immagini salvati, mantenendo solo i dati testuali.')) {
+      if (IS_CLIENT) {
+        try {
+          // Get current tours and remove media files
+          const currentTours = JSON.parse(localStorage.getItem('WS_CMS_TOURS') || '[]');
+          const cleanedTours = currentTours.map((tour: any) => {
+            const cleanedTour = { ...tour };
+            if (cleanedTour.tracks) {
+              Object.keys(cleanedTour.tracks).forEach(locale => {
+                Object.keys(cleanedTour.tracks[locale]).forEach(regionId => {
+                  const track = cleanedTour.tracks[locale][regionId];
+                  // Remove large media files but keep metadata
+                  delete track.audioDataUrl;
+                  delete track.imageDataUrl;
+                  if (track.audioFilename) track.audioFilename = 'removed-large-file.mp3';
+                  if (track.imageFilename) track.imageFilename = 'removed-large-file.jpg';
+                });
+              });
+            }
+            // Remove tour image
+            delete cleanedTour.tourImageDataUrl;
+            return cleanedTour;
+          });
+          
+          localStorage.setItem('WS_CMS_TOURS', JSON.stringify(cleanedTours));
+          setTours(cleanedTours);
+          alert('localStorage pulito! I file audio e immagini sono stati rimossi per liberare spazio.');
+        } catch (err) {
+          console.error('Error clearing localStorage:', err);
+          alert('Errore durante la pulizia del localStorage.');
+        }
+      }
+    }
+  };
+
+  const getStorageInfo = () => {
+    if (IS_CLIENT) {
+      try {
+        const data = localStorage.getItem('WS_CMS_TOURS');
+        if (data) {
+          const size = new Blob([data]).size;
+          const sizeMB = (size / 1024 / 1024).toFixed(2);
+          alert(`Dimensione localStorage: ${sizeMB}MB\n\nPer liberare spazio, usa "Pulisci localStorage" o riduci le dimensioni dei file audio/immagini.`);
+        } else {
+          alert('Nessun dato salvato nel localStorage.');
+        }
+      } catch (err) {
+        console.error('Error getting storage info:', err);
+        alert('Errore nel calcolo della dimensione del localStorage.');
+      }
     }
   };
 
@@ -824,6 +1041,20 @@ export default function PageCMSContent() {
                 <div className="text-sm text-neutral-400">
                   Tour: <span className="text-indigo-400 font-medium">{tour.title}</span>
                 </div>
+                <button 
+                  className="px-3 py-2 rounded-xl bg-blue-600/50 hover:bg-blue-500/50 text-white text-xs font-medium transition-all duration-200 hover:scale-105 shadow-lg"
+                  onClick={getStorageInfo}
+                  title="Verifica spazio localStorage"
+                >
+                  💾 Spazio
+                </button>
+                <button 
+                  className="px-3 py-2 rounded-xl bg-yellow-600/50 hover:bg-yellow-500/50 text-white text-xs font-medium transition-all duration-200 hover:scale-105 shadow-lg"
+                  onClick={clearLocalStorage}
+                  title="Pulisci file audio e immagini"
+                >
+                  🧹 Pulisci
+                </button>
                 <button 
                   className="px-4 py-2 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-sm font-medium transition-all duration-200 hover:scale-105 shadow-lg"
                   onClick={() => {
