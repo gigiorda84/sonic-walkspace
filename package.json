@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint --no-cache || true"
+    "lint": "next lint --no-cache || true",
+    "test:s3": "node scripts/test-s3.js"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "3.616.0",
@@ -25,6 +26,7 @@
     "@types/node": "24.3.0",
     "@types/react": "19.1.10",
     "autoprefixer": "10.4.19",
+    "dotenv": "^17.2.1",
     "eslint": "8.57.0",
     "eslint-config-next": "14.2.4",
     "postcss": "8.4.41",

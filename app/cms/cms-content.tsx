@@ -1005,6 +1005,22 @@ export default function PageCMSContent() {
     }
   };
 
+  const checkS3Status = async () => {
+    try {
+      const response = await fetch('/api/s3/status');
+      const data = await response.json();
+      
+      if (data.status === 'success') {
+        alert(`✅ S3 Configuration OK!\n\nBucket: ${data.bucket}\nPrefix: ${data.prefix}\nObjects: ${data.bucketInfo.totalObjects}\n\nAWS Region: ${data.config.awsRegion}\nAccess Key: ${data.config.awsAccessKeyId}\nPublic Read: ${data.config.s3PublicRead}`);
+      } else {
+        alert(`❌ S3 Configuration Error:\n\n${data.message}\n\nConfig:\nAWS Region: ${data.config.awsRegion}\nAccess Key: ${data.config.awsAccessKeyId}\nSecret Key: ${data.config.awsSecretAccessKey}\nPublic Read: ${data.config.s3PublicRead}`);
+      }
+    } catch (error) {
+      console.error('Error checking S3 status:', error);
+      alert('❌ Errore nel controllo dello stato S3. Controlla la console per i dettagli.');
+    }
+  };
+
   const sorted = [...(tour.regions || [])].sort((a, b) => (a.sort || 0) - (b.sort || 0));
 
   // Mock analytics data
@@ -1041,20 +1057,27 @@ export default function PageCMSContent() {
                 <div className="text-sm text-neutral-400">
                   Tour: <span className="text-indigo-400 font-medium">{tour.title}</span>
                 </div>
-                <button 
-                  className="px-3 py-2 rounded-xl bg-blue-600/50 hover:bg-blue-500/50 text-white text-xs font-medium transition-all duration-200 hover:scale-105 shadow-lg"
-                  onClick={getStorageInfo}
-                  title="Verifica spazio localStorage"
-                >
-                  💾 Spazio
-                </button>
-                <button 
-                  className="px-3 py-2 rounded-xl bg-yellow-600/50 hover:bg-yellow-500/50 text-white text-xs font-medium transition-all duration-200 hover:scale-105 shadow-lg"
-                  onClick={clearLocalStorage}
-                  title="Pulisci file audio e immagini"
-                >
-                  🧹 Pulisci
-                </button>
+                          <button 
+            className="px-3 py-2 rounded-xl bg-blue-600/50 hover:bg-blue-500/50 text-white text-xs font-medium transition-all duration-200 hover:scale-105 shadow-lg"
+            onClick={getStorageInfo}
+            title="Verifica spazio localStorage"
+          >
+            💾 Spazio
+          </button>
+          <button 
+            className="px-3 py-2 rounded-xl bg-yellow-600/50 hover:bg-yellow-500/50 text-white text-xs font-medium transition-all duration-200 hover:scale-105 shadow-lg"
+            onClick={clearLocalStorage}
+            title="Pulisci file audio e immagini"
+          >
+            🧹 Pulisci
+          </button>
+          <button 
+            className="px-3 py-2 rounded-xl bg-green-600/50 hover:bg-green-500/50 text-white text-xs font-medium transition-all duration-200 hover:scale-105 shadow-lg"
+            onClick={checkS3Status}
+            title="Verifica configurazione S3"
+          >
+            ☁️ S3 Status
+          </button>
                 <button 
                   className="px-4 py-2 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-sm font-medium transition-all duration-200 hover:scale-105 shadow-lg"
                   onClick={() => {
