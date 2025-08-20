@@ -1,0 +1,38 @@
+{
+  "app/cms/cms-content.tsx -> leaflet": {
+    "id": "app/cms/cms-content.tsx -> leaflet",
+    "files": [
+      "static/chunks/_app-pages-browser_node_modules_leaflet_dist_leaflet-src_js.js"
+    ]
+  },
+  "app/cms/cms-content.tsx -> react-leaflet": {
+    "id": "app/cms/cms-content.tsx -> react-leaflet",
+    "files": [
+      "static/chunks/_app-pages-browser_node_modules_react-leaflet_lib_index_js.js"
+    ]
+  },
+  "app/cms/cms-content.tsx -> recharts": {
+    "id": "app/cms/cms-content.tsx -> recharts",
+    "files": [
+      "static/chunks/_app-pages-browser_node_modules_recharts_es6_index_js.js"
+    ]
+  },
+  "app/cms/cms-content.tsx -> uuid": {
+    "id": "app/cms/cms-content.tsx -> uuid",
+    "files": [
+      "static/chunks/_app-pages-browser_node_modules_uuid_dist_esm-browser_index_js.js"
+    ]
+  },
+  "app/player/player-content.tsx -> leaflet": {
+    "id": "app/player/player-content.tsx -> leaflet",
+    "files": [
+      "static/chunks/_app-pages-browser_node_modules_leaflet_dist_leaflet-src_js.js"
+    ]
+  },
+  "app/player/player-content.tsx -> react-leaflet": {
+    "id": "app/player/player-content.tsx -> react-leaflet",
+    "files": [
+      "static/chunks/_app-pages-browser_node_modules_react-leaflet_lib_index_js.js"
+    ]
+  }
+}
