@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { S3Client, ListObjectsV2Command } from '@aws-sdk/client-s3';
+import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 
 function parseS3(u?: string) {
   if (!u) return { bucket: '', prefix: '' };
@@ -42,14 +42,18 @@ export async function GET() {
       } : undefined 
     });
 
-    // Test connection by listing objects
-    const command = new ListObjectsV2Command({
+    // Test connection by attempting a small upload
+    const testKey = `${prefix ? prefix + '/' : ''}test/status-check.txt`;
+    const testContent = `S3 Status Check - ${new Date().toISOString()}`;
+    
+    const command = new PutObjectCommand({
       Bucket: bucket,
-      Prefix: prefix,
-      MaxKeys: 10
+      Key: testKey,
+      Body: testContent,
+      ContentType: 'text/plain'
     });
 
-    const result = await client.send(command);
+    await client.send(command);
     
     return NextResponse.json({
       status: 'success',
@@ -62,12 +66,9 @@ export async function GET() {
         s3PublicRead: process.env.S3_PUBLIC_READ || 'NOT SET'
       },
       bucketInfo: {
-        totalObjects: result.KeyCount || 0,
-        sampleObjects: result.Contents?.slice(0, 5).map(obj => ({
-          key: obj.Key,
-          size: obj.Size,
-          lastModified: obj.LastModified
-        })) || []
+        message: 'Upload test successful - S3 is working correctly',
+        testFile: testKey,
+        note: 'List permissions not available, but uploads work fine'
       }
     });
 

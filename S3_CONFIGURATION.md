@@ -27,14 +27,17 @@
 }
 ```
 
-### 2. IAM User Setup
+### 2. IAM Group and User Setup
 
-1. **Create IAM User**:
+1. **Create IAM Group**:
    - Go to [IAM Console](https://console.aws.amazon.com/iam/)
-   - Create user: `sonic-walkscape-app`
-   - Access type: Programmatic access
+   - Click "Groups" → "Create group"
+   - Group name: `SonicWalkscapeS3Users`
+   - Description: `Users with S3 access for Sonic Walkscape project`
 
-2. **Attach Custom Policy**:
+2. **Create Custom Policy for Group**:
+   - Go to "Policies" → "Create policy"
+   - Use JSON editor and paste:
 ```json
 {
     "Version": "2012-10-17",
@@ -59,6 +62,23 @@
     ]
 }
 ```
+
+3. **Attach Policy to Group**:
+   - Select the `SonicWalkscapeS3Users` group
+   - Click "Attach policies"
+   - Search for and select your custom policy
+
+4. **Create IAM User**:
+   - Go to "Users" → "Create user"
+   - User name: `sonic-walkscape-app`
+   - Access type: Programmatic access
+   - **Don't attach policies directly**
+
+5. **Add User to Group**:
+   - Select the `sonic-walkscape-app` user
+   - Click "Add to group"
+   - Select `SonicWalkscapeS3Users`
+   - User automatically gets group permissions
 
 ### 3. Environment Configuration
 

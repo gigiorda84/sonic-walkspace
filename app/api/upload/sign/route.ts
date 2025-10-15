@@ -22,11 +22,16 @@ export async function POST(req: Request) {
     const key = `${prefix ? prefix + '/' : ''}${slug}/${locale}/audio/${regionId}.${ext}`;
 
     const client = new S3Client({ region: process.env.AWS_REGION || 'eu-west-1', credentials: process.env.AWS_ACCESS_KEY_ID ? { accessKeyId: process.env.AWS_ACCESS_KEY_ID!, secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY! } : undefined });
-    const command = new PutObjectCommand({ Bucket: bucket, Key: key, ContentType: contentType || 'audio/mpeg', ACL: process.env.S3_PUBLIC_READ ? 'public-read' : undefined });
+    const command = new PutObjectCommand({ 
+      Bucket: bucket, 
+      Key: key, 
+      ContentType: contentType || 'audio/mpeg'
+      // No ACL - bucket has ACLs disabled
+    });
     const url = await getSignedUrl(client, command, { expiresIn: 900 });
 
     const httpUrl = `https://${bucket}.s3.amazonaws.com/${key}`;
-    return NextResponse.json({ url, method: 'PUT', key, httpUrl, headers: process.env.S3_PUBLIC_READ ? { 'x-amz-acl': 'public-read' } : {} });
+    return NextResponse.json({ url, method: 'PUT', key, httpUrl, headers: {} });
   } catch (e:any) {
     return NextResponse.json({ error: String(e?.message || e) }, { status: 500 });
   }

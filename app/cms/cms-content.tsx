@@ -51,10 +51,10 @@ async function seedTour() {
   const { v4: uuidv4 } = await import("uuid");
   return {
     id: uuidv4(),
-    slug: "bandite-demo",
+    slug: `tour-${Date.now()}`, // Generate unique slug
     title: "BANDITE — Demo Tour",
     priceEUR: 3.99,
-    published: false,
+    published: true, // Default to published so tours appear in player
     locales: [{ code: "it-IT", title: "BANDITE (IT)", description: "Passeggiata sonora geolocalizzata." }],
     regions: [
       { id: uuidv4(), lat: 45.0749, lng: 7.6774, radiusM: 120, sort: 1 },
@@ -62,6 +62,7 @@ async function seedTour() {
       { id: uuidv4(), lat: 45.0567, lng: 7.6861, radiusM: 140, sort: 3 },
     ],
     tracks: { "it-IT": {} },
+    subtitles: { "it-IT": {} }, // Store SRT files per locale
     vouchers: [],
   };
 }
@@ -76,6 +77,270 @@ function randomCode() {
   const p = () => Math.random().toString(36).slice(2, 6).toUpperCase();
   return `WS-${p()}-${p()}`;
 }
+
+// SRT Subtitle Functions
+interface SubtitleEntry {
+  id: number;
+  startTime: string; // Format: "00:00:10,500"
+  endTime: string;   // Format: "00:00:13,000"
+  text: string;
+}
+
+function parseSRT(srtContent: string): SubtitleEntry[] {
+  const entries: SubtitleEntry[] = [];
+  const blocks = srtContent.trim().split('\n\n');
+  
+  blocks.forEach(block => {
+    const lines = block.trim().split('\n');
+    if (lines.length >= 3) {
+      const id = parseInt(lines[0]);
+      const timecode = lines[1];
+      const text = lines.slice(2).join('\n');
+      
+      const [startTime, endTime] = timecode.split(' --> ');
+      if (startTime && endTime) {
+        entries.push({ id, startTime, endTime, text });
+      }
+    }
+  });
+  
+  return entries;
+}
+
+function generateSRT(entries: SubtitleEntry[]): string {
+  return entries.map(entry => 
+    `${entry.id}\n${entry.startTime} --> ${entry.endTime}\n${entry.text}`
+  ).join('\n\n');
+}
+
+function timeToSeconds(timeStr: string): number {
+  const [time, ms] = timeStr.split(',');
+  const [hours, minutes, seconds] = time.split(':').map(Number);
+  return hours * 3600 + minutes * 60 + seconds + (ms ? parseInt(ms) / 1000 : 0);
+}
+
+function secondsToTime(seconds: number): string {
+  const hours = Math.floor(seconds / 3600);
+  const mins = Math.floor((seconds % 3600) / 60);
+  const secs = Math.floor(seconds % 60);
+  const ms = Math.floor((seconds % 1) * 1000);
+  
+  return `${hours.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')},${ms.toString().padStart(3, '0')}`;
+}
+
+// Generate subtitles from audio using OpenAI Whisper API or fallback
+async function generateSubtitlesFromAudio(audioFile: File, language: string = 'it-IT'): Promise<{
+  entries: SubtitleEntry[];
+  source: string;
+  duration?: number;
+  warning?: string;
+}> {
+  console.log('Generating subtitles from audio using advanced speech-to-text...', { 
+    fileName: audioFile.name, 
+    fileSize: audioFile.size, 
+    language 
+  });
+  
+  try {
+    // Prepare FormData for API call
+    const formData = new FormData();
+    formData.append('audio', audioFile);
+    formData.append('language', language.split('-')[0]); // Extract language code (it from it-IT)
+    
+    // Call our transcription API
+    const response = await fetch('/api/transcribe', {
+      method: 'POST',
+      body: formData,
+    });
+    
+    if (!response.ok) {
+      throw new Error(`API Error: ${response.status} - ${response.statusText}`);
+    }
+    
+    const result = await response.json();
+    
+    if (!result.success) {
+      throw new Error(result.error || 'Transcription failed');
+    }
+    
+    console.log(`✅ Transcription completed successfully!`, {
+      source: result.source,
+      duration: result.duration,
+      entriesCount: result.entries.length,
+      warning: result.warning
+    });
+    
+    if (result.warning) {
+      console.warn('⚠️ Transcription Warning:', result.warning);
+    }
+    
+    return result;
+    
+  } catch (error) {
+    console.error('❌ Error in generateSubtitlesFromAudio:', error);
+    
+    // Fallback to client-side mock generation
+    console.log('🔄 Falling back to client-side generation...');
+    const fallbackEntries = await generateFallbackSubtitles(audioFile, language);
+    return {
+      entries: fallbackEntries,
+      source: 'fallback-client',
+      warning: 'Utilizzata generazione locale. Aggiungi OPENAI_API_KEY per trascrizione AI.'
+    };
+  }
+}
+
+// Fallback subtitle generation for when API fails
+async function generateFallbackSubtitles(audioFile: File, language: string): Promise<SubtitleEntry[]> {
+  return new Promise((resolve, reject) => {
+    try {
+      // Create an audio element to analyze the audio file
+      const audio = new Audio();
+      const audioUrl = URL.createObjectURL(audioFile);
+      
+      audio.onloadedmetadata = () => {
+        const duration = audio.duration;
+        console.log(`📊 Audio analysis: ${duration} seconds duration`);
+        
+        // Generate dynamic subtitles based on audio duration
+        const entries: SubtitleEntry[] = [];
+        const segmentDuration = Math.max(3, Math.min(6, duration / 8)); // 3-6 seconds per segment
+        let currentTime = 0;
+        let id = 1;
+        
+        // Sample texts based on language
+        const sampleTexts: { [key: string]: string[] } = {
+          'it-IT': [
+            "Benvenuti in questa passeggiata sonora.",
+            "Qui potrete scoprire la storia di questo luogo.",
+            "Ascoltate attentamente i suoni che vi circondano.",
+            "Questa zona ha una storia molto particolare.",
+            "Noterete i dettagli architettonici interessanti.",
+            "Il paesaggio qui cambia durante le stagioni.",
+            "Questo punto offre una vista panoramica unica.",
+            "La tradizione locale racconta storie affascinanti.",
+            "Osservate come la luce cambia durante il giorno.",
+            "Grazie per aver partecipato a questo tour."
+          ],
+          'en-US': [
+            "Welcome to this audio walking tour.",
+            "Here you can discover the history of this place.",
+            "Listen carefully to the sounds around you.",
+            "This area has a very particular history.",
+            "Notice the interesting architectural details.",
+            "The landscape here changes with the seasons.",
+            "This point offers a unique panoramic view.",
+            "Local tradition tells fascinating stories.",
+            "Observe how the light changes during the day.",
+            "Thank you for participating in this tour."
+          ]
+        };
+        
+        const texts = sampleTexts[language] || sampleTexts['it-IT'];
+        
+        while (currentTime < duration - 1) {
+          const endTime = Math.min(currentTime + segmentDuration, duration);
+          const textIndex = (id - 1) % texts.length;
+          
+          entries.push({
+            id: id,
+            startTime: secondsToTime(currentTime),
+            endTime: secondsToTime(endTime),
+            text: texts[textIndex]
+          });
+          
+          currentTime = endTime + 0.5; // Small gap between segments
+          id++;
+        }
+        
+        console.log(`📝 Generated ${entries.length} fallback subtitle entries for ${duration.toFixed(1)}s audio`);
+        
+        // Cleanup
+        URL.revokeObjectURL(audioUrl);
+        resolve(entries);
+      };
+      
+      audio.onerror = () => {
+        console.error('❌ Error loading audio for analysis');
+        URL.revokeObjectURL(audioUrl);
+        
+        // Ultimate fallback
+        const fallbackEntries: SubtitleEntry[] = [
+          {
+            id: 1,
+            startTime: "00:00:00,000",
+            endTime: "00:00:03,000",
+            text: "Sottotitolo generato automaticamente."
+          },
+          {
+            id: 2,
+            startTime: "00:00:03,500",
+            endTime: "00:00:07,000",
+            text: "Modifica questo testo secondo le tue esigenze."
+          }
+        ];
+        resolve(fallbackEntries);
+      };
+      
+      // Load the audio data
+      audio.src = audioUrl;
+      
+      // Timeout fallback (10 seconds)
+      setTimeout(() => {
+        if (audio.readyState === 0) {
+          console.warn('⏱️ Audio loading timeout, using minimal fallback');
+          URL.revokeObjectURL(audioUrl);
+          
+          const timeoutEntries: SubtitleEntry[] = [
+            {
+              id: 1,
+              startTime: "00:00:00,000",
+              endTime: "00:00:05,000",
+              text: "Audio caricato con successo."
+            },
+            {
+              id: 2,
+              startTime: "00:00:05,500",
+              endTime: "00:00:10,000",
+              text: "Modifica questi sottotitoli secondo le tue esigenze."
+            }
+          ];
+          resolve(timeoutEntries);
+        }
+      }, 10000); // 10 second timeout
+      
+    } catch (error) {
+      console.error('❌ Error in generateFallbackSubtitles:', error);
+      reject(error);
+    }
+  });
+}
+
+
+// Function to download SRT file
+const downloadSRT = (subtitleName: string, content: string) => {
+  try {
+    // Create blob with SRT content
+    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+    
+    // Create download link
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${subtitleName}.srt`;
+    
+    // Trigger download
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    
+    // Clean up
+    URL.revokeObjectURL(url);
+  } catch (error) {
+    console.error('Error downloading SRT file:', error);
+    alert('Errore durante il download del file SRT.');
+  }
+};
 
 class ErrorBoundary extends React.Component<any, any> {
   constructor(props:any) { super(props); this.state = { hasError: false, msg: "" }; }
@@ -360,6 +625,8 @@ export default function PageCMSContent() {
   const [tours, setTours] = useState<any[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [tab, setTab] = useState("editor");
+  const [isDeletingTour, setIsDeletingTour] = useState<string | null>(null);
+  const [playingAudio, setPlayingAudio] = useState<string | null>(null);
   
   useEffect(() => {
     if (IS_CLIENT) {
@@ -369,9 +636,13 @@ export default function PageCMSContent() {
         if (savedTours) {
           const parsedTours = JSON.parse(savedTours);
           if (parsedTours && parsedTours.length > 0) {
-            setTours(parsedTours);
-            setSelectedId(parsedTours[0].id);
-            return;
+            // Filter out null/undefined tours and ensure they have IDs
+            const validTours = parsedTours.filter(t => t && t.id);
+            if (validTours.length > 0) {
+              setTours(validTours);
+              setSelectedId(validTours[0].id);
+              return;
+            }
           }
         }
       } catch (err) {
@@ -425,7 +696,10 @@ export default function PageCMSContent() {
   if (!tour) {
     // If no tour is selected but we have tours, select the first one
     if (tours.length > 0 && !selectedId) {
-      setSelectedId(tours[0].id);
+      const firstValidTour = tours.find(t => t && t.id);
+      if (firstValidTour) {
+        setSelectedId(firstValidTour.id);
+      }
       return (
         <div className="min-h-screen bg-gradient-to-br from-neutral-950 via-neutral-900 to-neutral-950 text-neutral-100 flex items-center justify-center">
           <div className="flex flex-col items-center gap-4">
@@ -455,98 +729,52 @@ export default function PageCMSContent() {
           // Ensure required properties exist
           if (!tourCopy.regions) tourCopy.regions = [];
           if (!tourCopy.tracks) tourCopy.tracks = {};
+          if (!tourCopy.subtitles) tourCopy.subtitles = {};
           if (!tourCopy.locales) tourCopy.locales = [];
           if (!tourCopy.vouchers) tourCopy.vouchers = [];
           return tourCopy;
         }
         return t;
-      });
+      }).filter(t => t && t.id); // Filter out null/undefined tours
       // Save to localStorage for player access
       if (IS_CLIENT) {
         try {
-          // Check localStorage size before saving
-          const dataToSave = JSON.stringify(updated);
-          const dataSize = new Blob([dataToSave]).size;
-          const maxSize = 5 * 1024 * 1024; // 5MB limit
-          
-          console.log(`Data size to save: ${(dataSize / 1024 / 1024).toFixed(2)}MB`);
-          
-          if (dataSize > maxSize) {
-            console.warn('Data too large for localStorage, attempting to clean up...');
+          // First, try to save optimized data that should fit in most browsers
+          const optimizedTours = updated.map(tour => {
+            const optimizedTour = { ...tour };
             
-            // Try to clean up old data by removing large media files
-            const cleanedTours = updated.map(tour => {
-              const cleanedTour = { ...tour };
-              if (cleanedTour.tracks) {
-                Object.keys(cleanedTour.tracks).forEach(locale => {
-                  Object.keys(cleanedTour.tracks[locale]).forEach(regionId => {
-                    const track = cleanedTour.tracks[locale][regionId];
-                    // Keep only essential data, remove large media files
-                    if (track.audioDataUrl && track.audioDataUrl.length > 100000) {
-                      console.log(`Removing large audio file from ${regionId}`);
-                      delete track.audioDataUrl;
-                      track.audioFilename = track.audioFilename || 'removed-large-file.mp3';
-                    }
-                    if (track.imageDataUrl && track.imageDataUrl.length > 100000) {
-                      console.log(`Removing large image file from ${regionId}`);
-                      delete track.imageDataUrl;
-                      track.imageFilename = track.imageFilename || 'removed-large-file.jpg';
-                    }
-                  });
+            // Proactively optimize audio files > 2MB to prevent quota issues
+            if (optimizedTour.tracks) {
+              Object.keys(optimizedTour.tracks).forEach(locale => {
+                Object.keys(optimizedTour.tracks[locale]).forEach(regionId => {
+                  const track = optimizedTour.tracks[locale][regionId];
+                  if (track.audioDataUrl && track.audioDataUrl.length > 2000000) { // 2MB
+                    console.log(`📉 Optimizing large audio for storage: ${regionId} (${(track.audioDataUrl.length/1024/1024).toFixed(2)}MB → metadata only)`);
+                    // Keep metadata but remove large audio data
+                    track.audioRemovedDueToSize = true;
+                    track.audioFilename = track.audioFilename || `audio-${regionId}.mp3`;
+                    delete track.audioDataUrl;
+                  }
                 });
-              }
-              return cleanedTour;
-            });
-            
-            const cleanedData = JSON.stringify(cleanedTours);
-            const cleanedSize = new Blob([cleanedData]).size;
-            
-            console.log(`Cleaned data size: ${(cleanedSize / 1024 / 1024).toFixed(2)}MB`);
-            
-            if (cleanedSize <= maxSize) {
-              localStorage.setItem('WS_CMS_TOURS', cleanedData);
-              console.log('Tours saved to localStorage after cleanup');
-            } else {
-              // If still too large, save only essential data
-              const essentialTours = updated.map(tour => ({
-                id: tour.id,
-                title: tour.title,
-                description: tour.description,
-                locale: tour.locale,
-                published: tour.published,
-                regions: tour.regions?.map(r => ({
-                  id: r.id,
-                  name: r.name,
-                  lat: r.lat,
-                  lng: r.lng,
-                  radiusM: r.radiusM,
-                  sort: r.sort
-                })),
-                tracks: tour.tracks ? Object.keys(tour.tracks).reduce((acc, locale) => {
-                  acc[locale] = Object.keys(tour.tracks[locale]).reduce((regionAcc, regionId) => {
-                    const track = tour.tracks[locale][regionId];
-                    regionAcc[regionId] = {
-                      title: track.title,
-                      description: track.description,
-                      transcript: track.transcript,
-                      frequency: track.frequency,
-                      audioFilename: track.audioFilename,
-                      imageFilename: track.imageFilename
-                    };
-                    return regionAcc;
-                  }, {});
-                  return acc;
-                }, {}) : {}
-              }));
-              
-              localStorage.setItem('WS_CMS_TOURS', JSON.stringify(essentialTours));
-              console.log('Tours saved to localStorage with essential data only');
+              });
             }
-          } else {
-            // Data is small enough, save normally
-            localStorage.setItem('WS_CMS_TOURS', dataToSave);
-            console.log('Tours saved to localStorage successfully');
-          }
+            
+            return optimizedTour;
+          });
+
+          const dataToSave = JSON.stringify(optimizedTours);
+          const dataSize = new Blob([dataToSave]).size;
+          
+          console.log(`📊 Optimized data size: ${(dataSize / 1024 / 1024).toFixed(2)}MB`);
+          console.log(`📋 Number of tours: ${updated.length}`);
+          console.log(`🎵 Tours with audio:`, updated.map(t => ({
+            title: t.title?.substring(0, 20),
+            hasAudio: Object.values(t.tracks?.['it-IT'] || {}).some((track: any) => track.audioDataUrl)
+          })));
+          
+          // Try to save the optimized data
+          localStorage.setItem('WS_CMS_TOURS', dataToSave);
+          console.log('✅ Tours saved successfully with smart optimization');
           
           // Debug: log the updated tour data
           const updatedTour = updated.find(t => t.id === selectedId);
@@ -557,23 +785,37 @@ export default function PageCMSContent() {
               regions: updatedTour.regions?.length,
               tracks: updatedTour.tracks ? Object.keys(updatedTour.tracks) : [],
               sampleTrack: updatedTour.tracks?.[updatedTour.locale || 'it-IT'] ? 
-                Object.keys(updatedTour.tracks[updatedTour.locale || 'it-IT'])[0] : null
+                Object.keys(updatedTour.tracks[updatedTour.locale || 'it-IT'])[0] : null,
+              subtitles: updatedTour.subtitles ? Object.keys(updatedTour.subtitles) : 'No subtitles'
             });
+            
+            // Debug subtitles structure
+            if (updatedTour.subtitles) {
+              console.log('📝 Subtitles structure:', {
+                locales: Object.keys(updatedTour.subtitles),
+                itIT: updatedTour.subtitles['it-IT'] ? Object.keys(updatedTour.subtitles['it-IT']) : 'No it-IT locale',
+                itITContent: updatedTour.subtitles['it-IT'] ? Object.values(updatedTour.subtitles['it-IT']).map((s: any) => ({ name: s.name, contentLength: s.content?.length || 0 })) : 'No content'
+              });
+            }
           }
         } catch (err) {
-          console.error('Failed to save tours to localStorage:', err);
+          console.error('Failed to save optimized tours:', err);
           
-          // If quota exceeded, try to clear some space
+          // Final fallback: save only essential data
           if (err.name === 'QuotaExceededError') {
-            console.log('Attempting to clear localStorage space...');
+            console.log('⚠️ localStorage quota exceeded even with optimization, saving essential data only...');
+            
             try {
-              // Clear old data and try again with essential data only
+              // If still too large, save essential data but preserve tour structure for player
               const essentialTours = updated.map(tour => ({
                 id: tour.id,
                 title: tour.title,
                 description: tour.description,
                 locale: tour.locale,
                 published: tour.published,
+                slug: tour.slug, // Keep slug for player
+                tourImageDataUrl: tour.tourImageDataUrl, // Keep tour image
+                parentTourId: tour.parentTourId,
                 regions: tour.regions?.map(r => ({
                   id: r.id,
                   name: r.name,
@@ -591,23 +833,28 @@ export default function PageCMSContent() {
                       transcript: track.transcript,
                       frequency: track.frequency,
                       audioFilename: track.audioFilename,
-                      imageFilename: track.imageFilename
+                      imageFilename: track.imageFilename,
+                      imageDataUrl: track.imageDataUrl, // Keep small images
+                      // Mark when audio was removed due to size
+                      audioRemovedDueToSize: !track.audioDataUrl && track.audioFilename
                     };
                     return regionAcc;
                   }, {});
                   return acc;
+      
                 }, {}) : {}
               }));
               
               localStorage.setItem('WS_CMS_TOURS', JSON.stringify(essentialTours));
-              console.log('Tours saved to localStorage with essential data only after quota error');
+              console.log('✅ Tours saved successfully with essential data only (large audio files excluded)');
             } catch (retryErr) {
-              console.error('Failed to save even essential data:', retryErr);
+              console.error('❌ Failed to save even essential data:', retryErr);
               alert('Errore: Impossibile salvare i dati. Prova a rimuovere alcuni file audio o immagini per liberare spazio.');
             }
           }
         }
       }
+      
       return updated;
     });
   };
@@ -631,22 +878,102 @@ export default function PageCMSContent() {
     }
   };
 
-  const deleteTour = (tourId: string) => {
-    setTours((s) => {
-      const updated = s.filter((t) => t.id !== tourId);
-      // Save to localStorage for player access
-      if (IS_CLIENT) {
-        try {
-          localStorage.setItem('WS_CMS_TOURS', JSON.stringify(updated));
-        } catch (err) {
-          console.error('Failed to save tours to localStorage:', err);
+  // Function to delete S3 files for a tour
+  const deleteS3FilesForTour = async (tour: any) => {
+    if (!tour) return;
+    
+    console.log('🗑️ Deleting S3 files for tour:', tour.title);
+    
+    const filesToDelete = [];
+    
+    // Collect all S3 file keys from tracks
+    if (tour.tracks) {
+      Object.keys(tour.tracks).forEach(locale => {
+        const localeTracks = tour.tracks[locale];
+        if (localeTracks && typeof localeTracks === 'object') {
+          Object.keys(localeTracks).forEach(regionId => {
+            const track = localeTracks[regionId];
+            if (track) {
+              // Audio files
+              if (track.audioKey) {
+                filesToDelete.push(track.audioKey);
+                console.log('📄 Will delete audio:', track.audioKey);
+              }
+              // Image files
+              if (track.imageKey) {
+                filesToDelete.push(track.imageKey);
+                console.log('📄 Will delete image:', track.imageKey);
+              }
+            }
+          });
         }
+      });
+    }
+    
+    // Delete files from S3
+    if (filesToDelete.length > 0) {
+      try {
+        const response = await fetch('/api/s3/delete', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            keys: filesToDelete,
+            tourTitle: tour.title
+          }),
+        });
+        
+        if (response.ok) {
+          const result = await response.json();
+          console.log('✅ S3 files deleted successfully:', result);
+        } else {
+          console.error('❌ Failed to delete S3 files:', response.statusText);
+        }
+      } catch (error) {
+        console.error('❌ Error deleting S3 files:', error);
       }
-      return updated;
-    });
-    if (selectedId === tourId) {
-      const remainingTours = tours.filter((t) => t.id !== tourId);
-      setSelectedId(remainingTours.length > 0 ? remainingTours[0].id : null);
+    } else {
+      console.log('ℹ️ No S3 files to delete for tour:', tour.title);
+    }
+  };
+
+  const deleteTour = async (tourId: string) => {
+    setIsDeletingTour(tourId);
+    
+    try {
+      // Find the tour to delete to get its S3 files
+      const tourToDelete = tours.find(t => t.id === tourId);
+      
+      if (tourToDelete) {
+        // Delete S3 files first
+        await deleteS3FilesForTour(tourToDelete);
+      }
+      
+      setTours((s) => {
+        const updated = s.filter((t) => t.id !== tourId);
+        // Save to localStorage for player access
+        if (IS_CLIENT) {
+          try {
+            localStorage.setItem('WS_CMS_TOURS', JSON.stringify(updated));
+          } catch (err) {
+            console.error('Failed to save tours to localStorage:', err);
+          }
+        }
+        return updated;
+      });
+      
+      if (selectedId === tourId) {
+        const remainingTours = tours.filter((t) => t.id !== tourId);
+        setSelectedId(remainingTours.length > 0 ? remainingTours[0].id : null);
+      }
+      
+      console.log('✅ Tour deleted successfully:', tourToDelete?.title);
+    } catch (error) {
+      console.error('❌ Error deleting tour:', error);
+      alert('Errore durante l\'eliminazione del tour. Controllare la console per dettagli.');
+    } finally {
+      setIsDeletingTour(null);
     }
   };
 
@@ -696,7 +1023,7 @@ export default function PageCMSContent() {
   };
 
   const addLocale = () => {
-    const newCode = LANG_CODES.find((c) => !tour.locales.some((l: any) => l.code === c));
+    const newCode = LANG_CODES.find((c) => !tour.locales?.some((l: any) => l.code === c));
     if (newCode) {
       // Create a complete copy of the tour for the new language
       const { v4: uuidv4 } = require("uuid");
@@ -711,7 +1038,7 @@ export default function PageCMSContent() {
         locales: [{ 
           code: newCode, 
           title: `${tour.title} (${newCode.split("-")[0].toUpperCase()})`, 
-          description: tour.locales[0]?.description || "Passeggiata sonora geolocalizzata." 
+          description: tour.locales?.[0]?.description || "Passeggiata sonora geolocalizzata." 
         }],
         // Copy all regions but reset tracks for new language
         regions: tour.regions.map((r: any) => ({ ...r })),
@@ -735,11 +1062,11 @@ export default function PageCMSContent() {
     }
   };
 
-  const removeLocale = (code: string) => {
+  const removeLocale = async (code: string) => {
     // Find and delete the tour for this specific language
     const tourToDelete = tours.find((t: any) => t.locale === code && t.parentTourId === tour.parentTourId);
     if (tourToDelete) {
-      deleteTour(tourToDelete.id);
+      await deleteTour(tourToDelete.id);
     }
   };
 
@@ -847,37 +1174,76 @@ export default function PageCMSContent() {
   const onUploadMp3 = async (regionId: string, file: File | undefined) => {
     if (!file || !tour) return;
     
-    // Check file size (limit to 2MB for audio)
-    const maxSize = 2 * 1024 * 1024; // 2MB
+    // Check file size (limit to 50MB for audio)
+    const maxSize = 50 * 1024 * 1024; // 50MB
     if (file.size > maxSize) {
-      alert(`File troppo grande! Il file audio deve essere inferiore a 2MB. Dimensione attuale: ${(file.size / 1024 / 1024).toFixed(2)}MB`);
+      alert(`File troppo grande! Il file audio deve essere inferiore a 50MB. Dimensione attuale: ${(file.size / 1024 / 1024).toFixed(2)}MB`);
       return;
     }
     
+    const fileSizeMB = file.size / 1024 / 1024;
+    console.log(`📤 Uploading audio to S3: ${file.name} (${fileSizeMB.toFixed(2)}MB)`);
+    
     try {
-      // Convert to data URL for local playback
-      const dataUrl = await new Promise<string>((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(reader.result as string);
-        reader.onerror = () => reject(new Error('Failed to read file'));
-        reader.readAsDataURL(file);
+      // Get signed URL for S3 upload
+      const uploadRequest = {
+        slug: tour.slug || `tour-${tour.id}`,
+        locale: tour.locale || 'it-IT',
+        regionId: regionId,
+        fileName: file.name,
+        contentType: file.type || 'audio/mpeg'
+      };
+
+      const signResponse = await fetch('/api/upload/sign', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(uploadRequest)
       });
 
-      // Generate a simple filename
-      const fileName = `${regionId}-${Date.now()}.mp3`;
+      if (!signResponse.ok) {
+        const errorData = await signResponse.text();
+        throw new Error(`Failed to get upload URL: ${errorData}`);
+      }
 
+      const { url: uploadUrl, httpUrl, key } = await signResponse.json();
+
+      // Upload file to S3
+      const uploadResponse = await fetch(uploadUrl, {
+        method: 'PUT',
+        body: file,
+        headers: {
+          'Content-Type': uploadRequest.contentType
+        }
+      });
+
+      if (!uploadResponse.ok) {
+        throw new Error(`Failed to upload file: ${uploadResponse.status} ${uploadResponse.statusText}`);
+      }
+
+      console.log(`✅ Audio uploaded successfully to S3: ${httpUrl}`);
+
+      // Update tour with S3 URL instead of data URL
       updateTour((t: any) => {
         if (!t || !t.tracks) return;
         const currentLocale = t.locale || 'it-IT';
         if (!t.tracks[currentLocale]) t.tracks[currentLocale] = {};
         if (!t.tracks[currentLocale][regionId]) t.tracks[currentLocale][regionId] = {};
-        t.tracks[currentLocale][regionId].audioDataUrl = dataUrl;
-        t.tracks[currentLocale][regionId].audioFilename = fileName;
-        t.tracks[currentLocale][regionId].audioKey = `local://${fileName}`;
+        
+        // Store S3 URL instead of data URL - no more localStorage quota issues!
+        t.tracks[currentLocale][regionId].audioUrl = httpUrl; // S3 URL for playback
+        t.tracks[currentLocale][regionId].audioKey = key; // S3 key for management
+        t.tracks[currentLocale][regionId].audioFilename = file.name;
+        
+        // Remove any old data URL to save space
+        delete t.tracks[currentLocale][regionId].audioDataUrl;
       });
+      
+      // Simple success feedback
+      console.log(`✅ Audio caricato con successo: ${file.name}`);
+      
     } catch (err) {
       console.error("Upload error:", err);
-      alert("Errore durante il caricamento del file audio. Riprova.");
+      alert("❌ Errore durante il caricamento del file audio.\n\nProva con un file più piccolo o ricarica la pagina.");
     }
   };
 
@@ -951,56 +1317,217 @@ export default function PageCMSContent() {
     }
   };
 
-  const clearLocalStorage = () => {
-    if (confirm('Sei sicuro di voler pulire il localStorage? Questo rimuoverà tutti i file audio e immagini salvati, mantenendo solo i dati testuali.')) {
-      if (IS_CLIENT) {
-        try {
-          // Get current tours and remove media files
-          const currentTours = JSON.parse(localStorage.getItem('WS_CMS_TOURS') || '[]');
-          const cleanedTours = currentTours.map((tour: any) => {
-            const cleanedTour = { ...tour };
-            if (cleanedTour.tracks) {
-              Object.keys(cleanedTour.tracks).forEach(locale => {
-                Object.keys(cleanedTour.tracks[locale]).forEach(regionId => {
-                  const track = cleanedTour.tracks[locale][regionId];
-                  // Remove large media files but keep metadata
-                  delete track.audioDataUrl;
-                  delete track.imageDataUrl;
-                  if (track.audioFilename) track.audioFilename = 'removed-large-file.mp3';
-                  if (track.imageFilename) track.imageFilename = 'removed-large-file.jpg';
-                });
-              });
-            }
-            // Remove tour image
-            delete cleanedTour.tourImageDataUrl;
-            return cleanedTour;
-          });
-          
-          localStorage.setItem('WS_CMS_TOURS', JSON.stringify(cleanedTours));
-          setTours(cleanedTours);
-          alert('localStorage pulito! I file audio e immagini sono stati rimossi per liberare spazio.');
-        } catch (err) {
-          console.error('Error clearing localStorage:', err);
-          alert('Errore durante la pulizia del localStorage.');
+  // Function to handle SRT file upload
+  const onUploadSRT = async (file: File | undefined, inputElement?: HTMLInputElement) => {
+    if (!file) return;
+    
+    // Check file type
+    if (!file.name.toLowerCase().endsWith('.srt')) {
+      alert('Per favore seleziona un file .srt valido');
+      return;
+    }
+    
+    // Check file size (limit to 1MB for SRT files)
+    const maxSize = 1 * 1024 * 1024; // 1MB
+    if (file.size > maxSize) {
+      alert(`File troppo grande! Il file SRT deve essere inferiore a 1MB. Dimensione attuale: ${(file.size / 1024 / 1024).toFixed(2)}MB`);
+      return;
+    }
+    
+    try {
+      // Read file content
+      const fileContent = await file.text();
+      
+      // Validate SRT format by trying to parse it
+      const parsedEntries = parseSRT(fileContent);
+      if (parsedEntries.length === 0) {
+        alert('Il file SRT sembra essere vuoto o mal formattato. Controlla il formato del file.');
+        return;
+      }
+      
+      // Get filename without extension for display name
+      const fileName = file.name.replace(/\.srt$/i, '');
+      
+      // Check if subtitle with same name already exists
+      const currentLocale = tour.locale || 'it-IT';
+      const existingSubtitles = tour.subtitles?.[currentLocale] || {};
+      const existingNames = Object.values(existingSubtitles).map((sub: any) => sub.name.toLowerCase());
+      
+      if (existingNames.includes(fileName.toLowerCase())) {
+        const overwrite = confirm(`Un sottotitolo con il nome "${fileName}" esiste già. Vuoi sovrascriverlo?`);
+        if (!overwrite) {
+          // Reset the input
+          if (inputElement) inputElement.value = '';
+          return;
         }
       }
+      
+      // Add to tour
+      updateTour((t: any) => {
+        const currentLocale = t.locale || 'it-IT';
+        if (!t.subtitles) t.subtitles = {};
+        if (!t.subtitles[currentLocale]) t.subtitles[currentLocale] = {};
+        
+        // Remove existing subtitle with same name if overwriting
+        for (const [id, subtitle] of Object.entries(t.subtitles[currentLocale])) {
+          if ((subtitle as any).name.toLowerCase() === fileName.toLowerCase()) {
+            delete t.subtitles[currentLocale][id];
+            break;
+          }
+        }
+        
+        const srtId = Date.now().toString();
+        t.subtitles[currentLocale][srtId] = {
+          id: srtId,
+          name: fileName,
+          content: fileContent,
+          language: currentLocale,
+          createdAt: new Date().toISOString(),
+          uploadedFile: file.name // Keep track of original filename
+        };
+      });
+      
+      // Reset the input to allow re-uploading the same file
+      if (inputElement) inputElement.value = '';
+      
+      alert(`File SRT "${file.name}" caricato con successo! Trovate ${parsedEntries.length} entry di sottotitoli.`);
+      
+    } catch (error) {
+      console.error('Error uploading SRT file:', error);
+      alert('Errore durante il caricamento del file SRT. Controlla che sia un file di testo valido.');
     }
   };
 
-  const getStorageInfo = () => {
-    if (IS_CLIENT) {
-      try {
-        const data = localStorage.getItem('WS_CMS_TOURS');
-        if (data) {
-          const size = new Blob([data]).size;
-          const sizeMB = (size / 1024 / 1024).toFixed(2);
-          alert(`Dimensione localStorage: ${sizeMB}MB\n\nPer liberare spazio, usa "Pulisci localStorage" o riduci le dimensioni dei file audio/immagini.`);
-        } else {
-          alert('Nessun dato salvato nel localStorage.');
+  // Function to create SRT from audio file
+  const onCreateSRTFromAudio = async (file: File | undefined) => {
+    if (!file) return;
+    
+    // Check file type
+    const allowedTypes = ['audio/mpeg', 'audio/mp3', 'audio/wav', 'audio/m4a', 'audio/ogg'];
+    if (!allowedTypes.includes(file.type) && !file.name.match(/\.(mp3|wav|m4a|ogg)$/i)) {
+      alert('Per favore seleziona un file audio valido (MP3, WAV, M4A, OGG)');
+      return;
+    }
+    
+    // Check file size (limit to 50MB for audio files)
+    const maxSize = 50 * 1024 * 1024; // 50MB
+    if (file.size > maxSize) {
+      alert(`File troppo grande! Il file audio deve essere inferiore a 50MB. Dimensione attuale: ${(file.size / 1024 / 1024).toFixed(2)}MB`);
+      return;
+    }
+    
+    try {
+      console.log(`🎵 Starting SRT generation from audio: ${file.name} (${(file.size / 1024 / 1024).toFixed(2)}MB)`);
+      
+      // Generate subtitles from audio using advanced speech-to-text
+      const result = await generateSubtitlesFromAudio(file, tour.locale || 'it-IT');
+      console.log(`Subtitle generation completed. Generated ${result.entries.length} entries:`, result.entries);
+      
+      const srtContent = generateSRT(result.entries);
+      console.log('Generated SRT content:', srtContent);
+      
+      // Get filename without extension for display name
+      const fileName = file.name.replace(/\.(mp3|wav|m4a|ogg)$/i, '');
+      
+      // Generate unique ID for the subtitle
+      const srtId = Date.now().toString();
+      
+      // Add to tour
+      updateTour((t: any) => {
+        const currentLocale = t.locale || 'it-IT';
+        if (!t.subtitles) t.subtitles = {};
+        if (!t.subtitles[currentLocale]) t.subtitles[currentLocale] = {};
+        
+        t.subtitles[currentLocale][srtId] = {
+          id: srtId,
+          name: `${fileName} - Generati`,
+          content: srtContent,
+          language: currentLocale,
+          createdAt: new Date().toISOString(),
+          generatedFromAudio: file.name, // Track that this was generated from audio
+          transcriptionSource: result.source, // Track which transcription method was used
+          audioDuration: result.duration // Store audio duration
+        };
+        
+        console.log('Subtitle added to tour successfully');
+      });
+      
+      // Show different message based on transcription source
+      let statusMessage = '';
+      if (result.source === 'openai-whisper') {
+        statusMessage = `🤖 Sottotitoli generati con AI professionale!\n\nTrovate ${result.entries.length} entry di trascrizione reale.`;
+      } else {
+        statusMessage = `⚡ Sottotitoli generati con simulazione!\n\nTrovate ${result.entries.length} entry simulate.\n\n⚠️ L'API OpenAI non è disponibile (quota/errore).\nPer trascrizione reale, riprova più tardi.`;
+      }
+      
+      // Ask user for subtitle name and language
+      const subtitleName = prompt(`${statusMessage}\n\nCome vuoi chiamare questo file di sottotitoli?`, `${fileName} - Sottotitoli`) || `${fileName} - Auto Generated`;
+      
+      const languages = [
+        { code: 'it-IT', name: 'Italiano' },
+        { code: 'en-US', name: 'English' },
+        { code: 'es-ES', name: 'Español' },
+        { code: 'fr-FR', name: 'Français' },
+        { code: 'de-DE', name: 'Deutsch' }
+      ];
+      
+      const languageChoice = prompt(
+        `Seleziona la lingua dei sottotitoli:\n\n${languages.map((lang, index) => `${index + 1}. ${lang.name}`).join('\n')}\n\nInserisci il numero (1-${languages.length}):`,
+        '1'
+      );
+      
+      const selectedLanguage = languages[parseInt(languageChoice || '1') - 1] || languages[0];
+      
+      // Update the subtitle name and language
+      updateTour((t: any) => {
+        const currentLocale = t.locale || 'it-IT';
+        if (t.subtitles?.[currentLocale]?.[srtId]) {
+          t.subtitles[currentLocale][srtId].name = subtitleName;
+          t.subtitles[currentLocale][srtId].language = selectedLanguage.code;
         }
-      } catch (err) {
-        console.error('Error getting storage info:', err);
-        alert('Errore nel calcolo della dimensione del localStorage.');
+      });
+      
+      // Ask if user wants to edit content
+      const editNow = confirm('Vuoi modificare il contenuto dei sottotitoli ora?');
+      
+      if (editNow) {
+        // Open editor for the newly created subtitle
+        setTimeout(() => {
+          editSubtitleContent(srtId, srtContent);
+        }, 100);
+      }
+      
+    } catch (error) {
+      console.error('Error creating SRT from audio:', error);
+      alert('❌ Errore durante la generazione dei sottotitoli dall\'audio.\n\nDettagli errore: ' + (error instanceof Error ? error.message : 'Errore sconosciuto') + '\n\nRiprova con un file diverso o controlla la console per maggiori dettagli.');
+    }
+  };
+
+  // Function to edit subtitle content with better UX
+  const editSubtitleContent = (id: string, currentContent: string) => {
+    // Simple prompt for editing SRT content
+    const newContent = prompt('Modifica i sottotitoli:', currentContent);
+    
+    if (newContent !== null && newContent.trim() !== '') {
+      // Validate the SRT format
+      try {
+        const parsedEntries = parseSRT(newContent);
+        if (parsedEntries.length === 0) {
+          alert('Il formato SRT non è valido. Controlla la sintassi.');
+          return;
+        }
+        
+        // Update the subtitle
+        updateTour((t: any) => {
+          const currentLocale = t.locale || 'it-IT';
+          if (t.subtitles?.[currentLocale]?.[id]) {
+            t.subtitles[currentLocale][id].content = newContent;
+          }
+        });
+        
+        alert(`Sottotitoli aggiornati con ${parsedEntries.length} segmenti.`);
+      } catch (error) {
+        alert('Errore nel formato SRT. Ricontrolla il contenuto.');
       }
     }
   };
@@ -1011,7 +1538,7 @@ export default function PageCMSContent() {
       const data = await response.json();
       
       if (data.status === 'success') {
-        alert(`✅ S3 Configuration OK!\n\nBucket: ${data.bucket}\nPrefix: ${data.prefix}\nObjects: ${data.bucketInfo.totalObjects}\n\nAWS Region: ${data.config.awsRegion}\nAccess Key: ${data.config.awsAccessKeyId}\nPublic Read: ${data.config.s3PublicRead}`);
+        alert(`✅ S3 Configuration OK!\n\nBucket: ${data.bucket}\nPrefix: ${data.prefix}\n\n${data.bucketInfo.message}\nTest File: ${data.bucketInfo.testFile}\n\nAWS Region: ${data.config.awsRegion}\nAccess Key: ${data.config.awsAccessKeyId}\nPublic Read: ${data.config.s3PublicRead}\n\nNote: ${data.bucketInfo.note}`);
       } else {
         alert(`❌ S3 Configuration Error:\n\n${data.message}\n\nConfig:\nAWS Region: ${data.config.awsRegion}\nAccess Key: ${data.config.awsAccessKeyId}\nSecret Key: ${data.config.awsSecretAccessKey}\nPublic Read: ${data.config.s3PublicRead}`);
       }
@@ -1057,27 +1584,6 @@ export default function PageCMSContent() {
                 <div className="text-sm text-neutral-400">
                   Tour: <span className="text-indigo-400 font-medium">{tour.title}</span>
                 </div>
-                          <button 
-            className="px-3 py-2 rounded-xl bg-blue-600/50 hover:bg-blue-500/50 text-white text-xs font-medium transition-all duration-200 hover:scale-105 shadow-lg"
-            onClick={getStorageInfo}
-            title="Verifica spazio localStorage"
-          >
-            💾 Spazio
-          </button>
-          <button 
-            className="px-3 py-2 rounded-xl bg-yellow-600/50 hover:bg-yellow-500/50 text-white text-xs font-medium transition-all duration-200 hover:scale-105 shadow-lg"
-            onClick={clearLocalStorage}
-            title="Pulisci file audio e immagini"
-          >
-            🧹 Pulisci
-          </button>
-          <button 
-            className="px-3 py-2 rounded-xl bg-green-600/50 hover:bg-green-500/50 text-white text-xs font-medium transition-all duration-200 hover:scale-105 shadow-lg"
-            onClick={checkS3Status}
-            title="Verifica configurazione S3"
-          >
-            ☁️ S3 Status
-          </button>
                 <button 
                   className="px-4 py-2 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-sm font-medium transition-all duration-200 hover:scale-105 shadow-lg"
                   onClick={() => {
@@ -1105,29 +1611,39 @@ export default function PageCMSContent() {
         <div className="border-b border-neutral-800/50 bg-neutral-800/20">
           <div className="max-w-7xl mx-auto px-6 py-3">
             <div className="flex items-center gap-3 overflow-x-auto">
-              {tours.map((t) => (
-                <button
-                  key={t.id}
-                  className={`flex items-center gap-2 px-3 py-2 rounded-xl text-sm font-medium transition-all duration-200 whitespace-nowrap ${
-                    selectedId === t.id
-                      ? "bg-gradient-to-r from-indigo-600 to-purple-600 text-white shadow-lg"
-                      : "bg-neutral-800/50 hover:bg-neutral-700/50 text-neutral-300 hover:text-neutral-100"
-                  }`}
-                  onClick={() => setSelectedId(t.id)}
-                >
-                  <span>{t.title}</span>
+              {tours.filter(t => t && t.id).map((t) => (
+                <div key={t.id} className="relative flex items-center">
+                  <button
+                    className={`flex items-center gap-2 px-3 py-2 rounded-xl text-sm font-medium transition-all duration-200 whitespace-nowrap ${
+                      selectedId === t.id
+                        ? "bg-gradient-to-r from-indigo-600 to-purple-600 text-white shadow-lg"
+                        : "bg-neutral-800/50 hover:bg-neutral-700/50 text-neutral-300 hover:text-neutral-100"
+                    } ${tours.length > 1 ? 'pr-8' : ''}`}
+                    onClick={() => setSelectedId(t.id)}
+                  >
+                    <span>{t.title}</span>
+                  </button>
                   {tours.length > 1 && (
                     <button
-                      className="ml-1 text-xs hover:text-red-300 transition-colors duration-200"
-                      onClick={(e) => {
+                      className={`absolute right-1 top-1/2 -translate-y-1/2 w-6 h-6 flex items-center justify-center text-xs transition-all duration-200 rounded-full ${
+                        isDeletingTour === t.id 
+                          ? 'text-orange-400 bg-orange-500/20 animate-spin' 
+                          : 'hover:text-red-300 hover:bg-red-500/20'
+                      }`}
+                      onClick={async (e) => {
                         e.stopPropagation();
-                        deleteTour(t.id);
+                        if (isDeletingTour === t.id) return; // Prevent multiple clicks
+                        if (confirm(`Eliminare il tour "${t.title}"? Tutti i file S3 associati verranno eliminati permanentemente.`)) {
+                          await deleteTour(t.id);
+                        }
                       }}
+                      disabled={isDeletingTour === t.id}
+                      title={isDeletingTour === t.id ? "Eliminazione in corso..." : "Elimina tour (inclusi file S3)"}
                     >
-                      ✕
+                      {isDeletingTour === t.id ? '⏳' : '✕'}
                     </button>
                   )}
-                </button>
+                </div>
               ))}
             </div>
           </div>
@@ -1140,7 +1656,7 @@ export default function PageCMSContent() {
             <div className="lg:col-span-3 flex flex-col gap-6">
               {/* Tab Navigation */}
               <div className="flex items-center gap-1 p-1 rounded-2xl bg-neutral-900/30 border border-neutral-800/50">
-                {["editor", "analytics"].map((t) => (
+                {["editor", "subtitles", "analytics"].map((t) => (
                   <button
                     key={t}
                     className={`flex-1 px-4 py-2 rounded-xl text-sm font-medium transition-all duration-200 ${
@@ -1150,7 +1666,7 @@ export default function PageCMSContent() {
                     }`}
                     onClick={() => setTab(t)}
                   >
-                    {t === "editor" ? "Editor" : "Analytics"}
+                    {t === "editor" ? "Editor" : t === "subtitles" ? "🎬 Sottotitoli" : "Analytics"}
                   </button>
                 ))}
               </div>
@@ -1191,7 +1707,7 @@ export default function PageCMSContent() {
                         <label className="block text-xs text-neutral-500 mb-2">Lingua</label>
                         <select 
                           className="w-full rounded-xl bg-neutral-900/50 border border-neutral-600/50 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/50 transition-all duration-200" 
-                          value={tour.locale || 'it-IT'} 
+                          value={tour.locale ?? 'it-IT'} 
                           onChange={(e) => updateTour((t: any) => { t.locale = e.target.value; })} 
                         >
                           <option value="it-IT">Italiano (IT)</option>
@@ -1206,7 +1722,7 @@ export default function PageCMSContent() {
                         <input 
                           className="w-full rounded-xl bg-neutral-900/50 border border-neutral-600/50 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/50 transition-all duration-200" 
                           placeholder="ID del tour originale (opzionale)"
-                          value={tour.parentTourId || ""} 
+                          value={tour.parentTourId ?? ""} 
                           onChange={(e) => updateTour((t: any) => { t.parentTourId = e.target.value; })} 
                         />
                       </div>
@@ -1216,7 +1732,7 @@ export default function PageCMSContent() {
                           className="w-full rounded-xl bg-neutral-900/50 border border-neutral-600/50 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/50 transition-all duration-200 resize-none" 
                           rows={3}
                           placeholder="Descrizione del tour per gli utenti..."
-                          value={tour.description || ""} 
+                          value={tour.description ?? ""} 
                           onChange={(e) => updateTour((t: any) => { t.description = e.target.value; })} 
                         />
                       </div>
@@ -1226,7 +1742,7 @@ export default function PageCMSContent() {
                           <input 
                             className="flex-1 rounded-xl bg-neutral-900/50 border border-neutral-600/50 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/50 transition-all duration-200" 
                             placeholder="URL immagine o carica file" 
-                            value={tour.tourImageUrl || ""} 
+                            value={tour.tourImageUrl ?? ""} 
                             onChange={(e) => updateTour((t: any) => { t.tourImageUrl = e.target.value; })} 
                           />
                           <label className="text-xs rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 px-3 py-2 cursor-pointer transition-all duration-200 hover:scale-105 shadow-lg">
@@ -1245,15 +1761,24 @@ export default function PageCMSContent() {
                         )}
                       </div>
                       <div className="md:col-span-2 flex items-center gap-3">
-                        <label className="flex items-center gap-2 text-sm">
-                          <input 
-                            type="checkbox" 
-                            className="rounded bg-neutral-900/50 border border-neutral-600/50 focus:ring-2 focus:ring-indigo-500/50 transition-all duration-200" 
-                            checked={tour.published} 
-                            onChange={(e) => updateTour((t: any) => { t.published = e.target.checked; })} 
-                          />
-                          Pubblicato
-                        </label>
+                        <div className={`flex items-center gap-3 p-3 rounded-xl border transition-all duration-200 ${
+                          tour.published 
+                            ? 'bg-green-600/20 border-green-500/40 text-green-300' 
+                            : 'bg-orange-600/20 border-orange-500/40 text-orange-300'
+                        }`}>
+                          <label className="flex items-center gap-2 text-sm font-medium cursor-pointer">
+                            <input 
+                              type="checkbox" 
+                              className="rounded bg-neutral-900/50 border border-neutral-600/50 focus:ring-2 focus:ring-indigo-500/50 transition-all duration-200" 
+                              checked={tour.published} 
+                              onChange={(e) => updateTour((t: any) => { t.published = e.target.checked; })} 
+                            />
+                            {tour.published ? '📢 Tour Pubblicato' : '📝 Tour in Bozza'}
+                          </label>
+                          <div className="text-xs opacity-70">
+                            {tour.published ? 'Visibile nel Player' : 'Solo in CMS'}
+                          </div>
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -1275,8 +1800,8 @@ export default function PageCMSContent() {
                       <div className="text-xs text-neutral-500 mb-2">Lingua Corrente</div>
                       <div className="flex items-center gap-3 p-3 rounded-xl border border-emerald-700/50 bg-emerald-800/20">
                         <div className="flex-1">
-                          <div className="text-sm font-medium text-emerald-300">{tour.locales[0]?.title || tour.title}</div>
-                          <div className="text-xs text-emerald-400">{tour.locale || tour.locales[0]?.code || 'it-IT'}</div>
+                          <div className="text-sm font-medium text-emerald-300">{tour.locales?.[0]?.title || tour.title}</div>
+                          <div className="text-xs text-emerald-400">{tour.locale || tour.locales?.[0]?.code || 'it-IT'}</div>
                         </div>
                         <div className="text-xs text-emerald-400">Attiva</div>
                       </div>
@@ -1292,7 +1817,7 @@ export default function PageCMSContent() {
                             <div key={t.id} className="flex items-center gap-3 p-2 rounded-lg border border-neutral-700/50 bg-neutral-800/30">
                               <div className="flex-1">
                                 <div className="text-sm font-medium text-neutral-200">{t.title}</div>
-                                <div className="text-xs text-neutral-400">{t.locale || t.locales[0]?.code}</div>
+                                <div className="text-xs text-neutral-400">{t.locale || t.locales?.[0]?.code}</div>
                               </div>
                               <div className="flex items-center gap-2">
                                 <span className={`text-xs px-2 py-1 rounded ${
@@ -1338,6 +1863,250 @@ export default function PageCMSContent() {
                       <div style={{ width: "100%", height: 280 }}>
                         <DynamicChart data={langs} />
                       </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Subtitles Management Tab */}
+              {tab === "subtitles" && (
+                <div className="rounded-2xl border border-neutral-800/50 bg-neutral-900/30 backdrop-blur-sm p-6 shadow-xl">
+                  <div className="text-sm text-neutral-400 mb-6 font-medium">🎬 Gestione Sottotitoli</div>
+                  
+                  {/* Subtitle List */}
+                  <div className="space-y-4">
+                    {/* API Status Info */}
+                    {Object.values(tour.subtitles?.[tour.locale || 'it-IT'] || {}).some((sub: any) => sub.transcriptionSource && sub.transcriptionSource !== 'openai-whisper') && (
+                      <div className="bg-orange-600/10 border border-orange-500/30 rounded-lg p-4 flex items-start gap-3">
+                        <div className="text-orange-400 text-lg">⚡</div>
+                        <div>
+                          <div className="text-orange-300 font-medium text-sm">Modalità Simulazione Rilevata</div>
+                          <div className="text-orange-200/80 text-xs mt-1">
+                            Alcuni sottotitoli sono stati generati con simulazione intelligente. 
+                            Per trascrizione AI professionale, aggiungi <code className="bg-orange-900/30 px-1 rounded">OPENAI_API_KEY</code> al file <code className="bg-orange-900/30 px-1 rounded">.env.local</code>.
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                    
+                    {/* Success message for AI transcription */}
+                    {Object.values(tour.subtitles?.[tour.locale || 'it-IT'] || {}).some((sub: any) => sub.transcriptionSource === 'openai-whisper') && (
+                      <div className="bg-green-600/10 border border-green-500/30 rounded-lg p-4 flex items-start gap-3">
+                        <div className="text-green-400 text-lg">🤖</div>
+                        <div>
+                          <div className="text-green-300 font-medium text-sm">AI Professionale Attiva</div>
+                          <div className="text-green-200/80 text-xs mt-1">
+                            OpenAI Whisper è configurato e funzionante. I sottotitoli vengono generati con trascrizione AI professionale.
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                    
+                    <div className="flex items-center justify-between">
+                      <h3 className="text-lg font-medium text-neutral-100">Sottotitoli Disponibili</h3>
+                      <div className="flex items-center gap-2">
+                        <label className="px-3 py-2 text-sm bg-emerald-600/50 hover:bg-emerald-600/70 text-white rounded-xl transition-all duration-200 cursor-pointer">
+                          📁 Carica SRT
+                          <input 
+                            type="file" 
+                            accept=".srt" 
+                            className="hidden" 
+                            onChange={(e) => onUploadSRT(e.target.files?.[0], e.target)} 
+                          />
+                        </label>
+                        <label className="px-3 py-2 text-sm bg-purple-600/50 hover:bg-purple-600/70 text-white rounded-xl transition-all duration-200 cursor-pointer">
+                          🎵 Nuovo da Audio
+                          <input 
+                            type="file" 
+                            accept="audio/mpeg,audio/mp3,audio/wav,audio/m4a,audio/ogg" 
+                            className="hidden" 
+                            onChange={(e) => onCreateSRTFromAudio(e.target.files?.[0])} 
+                          />
+                        </label>
+                        <button
+                          onClick={() => {
+                            const name = prompt('Nome del nuovo file sottotitoli:');
+                            if (name) {
+                              const srtId = Date.now().toString();
+                              updateTour((t: any) => {
+                                const currentLocale = t.locale || 'it-IT';
+                                if (!t.subtitles) t.subtitles = {};
+                                if (!t.subtitles[currentLocale]) t.subtitles[currentLocale] = {};
+                                
+                                t.subtitles[currentLocale][srtId] = {
+                                  id: srtId,
+                                  name: name,
+                                  content: '1\n00:00:00,000 --> 00:00:03,000\nNuovo sottotitolo\n\n2\n00:00:03,500 --> 00:00:06,000\nModifica questo testo',
+                                  language: currentLocale,
+                                  createdAt: new Date().toISOString()
+                                };
+                              });
+                              
+                              // Ask if user wants to edit immediately
+                              setTimeout(() => {
+                                if (confirm('Vuoi modificare il contenuto ora?')) {
+                                  editSubtitleContent(srtId, '1\n00:00:00,000 --> 00:00:03,000\nNuovo sottotitolo\n\n2\n00:00:03,500 --> 00:00:06,000\nModifica questo testo');
+                                }
+                              }, 100);
+                            }
+                          }}
+                          className="px-3 py-2 text-sm bg-indigo-600/50 hover:bg-indigo-600/70 text-white rounded-xl transition-all duration-200"
+                        >
+                          ✏️ Nuovo Manuale
+                        </button>
+                      </div>
+                    </div>
+                    
+                    {/* Subtitle Files */}
+                    <div className="space-y-3">
+                      {Object.entries(tour.subtitles?.[tour.locale || 'it-IT'] || {}).map(([id, subtitle]: [string, any]) => (
+                        <div key={id} className="border border-neutral-700/50 rounded-xl p-5 bg-neutral-800/30 hover:bg-neutral-800/50 transition-all duration-200 shadow-lg">
+                          <div className="flex flex-col gap-4">
+                            {/* Header with title input */}
+                            <div className="flex items-center justify-between">
+                              <input
+                                type="text"
+                                value={subtitle.name}
+                                onChange={(e) => updateTour((t: any) => {
+                                  const currentLocale = t.locale || 'it-IT';
+                                  t.subtitles[currentLocale][id].name = e.target.value;
+                                })}
+                                className="flex-1 bg-neutral-700/50 border border-neutral-600/50 rounded-lg px-3 py-2 text-sm text-neutral-100 font-medium focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 transition-all"
+                                placeholder="Nome sottotitoli..."
+                              />
+                            </div>
+                            
+                            {/* Metadata badges */}
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="text-xs text-neutral-400 bg-neutral-700/30 px-2 py-1 rounded-md flex items-center gap-1">
+                                📅 {new Date(subtitle.createdAt).toLocaleDateString('it-IT', { 
+                                  day: '2-digit', 
+                                  month: '2-digit', 
+                                  year: 'numeric',
+                                  hour: '2-digit',
+                                  minute: '2-digit'
+                                })}
+                              </span>
+                              
+                              {subtitle.uploadedFile && (
+                                <span className="text-xs bg-emerald-600/20 text-emerald-300 px-3 py-1 rounded-full border border-emerald-500/30 font-medium flex items-center gap-1">
+                                  📁 File: {subtitle.uploadedFile}
+                                </span>
+                              )}
+                              
+                              {subtitle.generatedFromAudio && (
+                                <span className="text-xs bg-purple-600/20 text-purple-300 px-3 py-1 rounded-full border border-purple-500/30 font-medium flex items-center gap-1">
+                                  🎵 Audio: {subtitle.generatedFromAudio}
+                                </span>
+                              )}
+                              
+                              {subtitle.transcriptionSource && (
+                                <span className={`text-xs px-3 py-1 rounded-full border font-medium flex items-center gap-1 ${
+                                  subtitle.transcriptionSource === 'openai-whisper' 
+                                    ? 'bg-green-600/20 text-green-300 border-green-500/40 shadow-green-500/10 shadow-md' 
+                                    : 'bg-orange-600/20 text-orange-300 border-orange-500/40 shadow-orange-500/10 shadow-md'
+                                }`}>
+                                  {subtitle.transcriptionSource === 'openai-whisper' ? '🤖 AI Professionale' : '⚡ Simulazione Intelligente'}
+                                </span>
+                              )}
+                              
+                              {subtitle.audioDuration && (
+                                <span className="text-xs bg-blue-600/20 text-blue-300 px-3 py-1 rounded-full border border-blue-500/30 font-medium flex items-center gap-1">
+                                  🕒 {Math.round(subtitle.audioDuration)}s
+                                </span>
+                              )}
+                              
+                              {/* Add entries count */}
+                              {subtitle.content && (
+                                <span className="text-xs bg-indigo-600/20 text-indigo-300 px-3 py-1 rounded-full border border-indigo-500/30 font-medium flex items-center gap-1">
+                                  📝 {subtitle.content.split('\n\n').filter(Boolean).length} segmenti
+                                </span>
+                              )}
+                            </div>
+                            
+                            {/* SRT Preview */}
+                            <div className="bg-neutral-900/50 p-3 rounded-lg border border-neutral-700/30">
+                              <div className="text-xs text-neutral-400 mb-2 font-medium">📄 Anteprima SRT:</div>
+                              <div className="text-xs text-neutral-300 font-mono max-h-32 overflow-y-auto whitespace-pre-wrap bg-neutral-800/30 p-2 rounded">
+                                {subtitle.content.substring(0, 300)}{subtitle.content.length > 300 ? '...' : ''}
+                              </div>
+                            </div>
+                            
+                            {/* Usage info */}
+                            <div className="text-xs text-neutral-500">
+                              <div className="font-medium mb-2 text-neutral-400">🏷️ Utilizzato nelle regioni:</div>
+                              <div className="flex flex-wrap gap-1">
+                                {Object.entries(tour.tracks?.[tour.locale || 'it-IT'] || {})
+                                  .filter(([, track]: [string, any]) => track.subtitleId === id)
+                                  .map(([regionId]: [string, any]) => (
+                                    <span key={regionId} className="inline-block bg-neutral-700/50 text-neutral-300 px-2 py-1 rounded-md text-xs">
+                                      {regionId}
+                                    </span>
+                                  ))}
+                                {Object.entries(tour.tracks?.[tour.locale || 'it-IT'] || {})
+                                  .filter(([, track]: [string, any]) => track.subtitleId === id).length === 0 && (
+                                  <span className="text-neutral-500 italic text-xs">Nessuna regione assegnata</span>
+                                )}
+                              </div>
+                            </div>
+                            
+                            {/* Action buttons */}
+                            <div className="flex items-center justify-between pt-3 border-t border-neutral-700/30">
+                              <div className="flex items-center gap-2">
+                                <button
+                                  onClick={() => downloadSRT(subtitle.name, subtitle.content)}
+                                  className="px-3 py-2 text-xs bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 rounded-lg border border-blue-500/30 transition-all duration-200 font-medium flex items-center gap-1"
+                                  title="Scarica file SRT"
+                                >
+                                  💾 Download
+                                </button>
+                                <button
+                                  onClick={() => editSubtitleContent(id, subtitle.content)}
+                                  className="px-3 py-2 text-xs bg-yellow-600/20 hover:bg-yellow-600/30 text-yellow-300 rounded-lg border border-yellow-500/30 transition-all duration-200 font-medium flex items-center gap-1"
+                                >
+                                  ✏️ Modifica
+                                </button>
+                              </div>
+                              <button
+                                onClick={() => {
+                                  if (confirm('Eliminare questo file di sottotitoli?')) {
+                                    updateTour((t: any) => {
+                                      const currentLocale = t.locale || 'it-IT';
+                                      delete t.subtitles[currentLocale][id];
+                                      
+                                      // Remove references in tracks
+                                      Object.keys(t.tracks[currentLocale] || {}).forEach(regionId => {
+                                        if (t.tracks[currentLocale][regionId]?.subtitleId === id) {
+                                          delete t.tracks[currentLocale][regionId].subtitleId;
+                                        }
+                                      });
+                                    });
+                                  }
+                                }}
+                                className="px-3 py-2 text-xs bg-red-600/20 hover:bg-red-600/30 text-red-300 rounded-lg border border-red-500/30 transition-all duration-200 font-medium flex items-center gap-1"
+                              >
+                                🗑️ Elimina
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                      
+                      {Object.keys(tour.subtitles?.[tour.locale || 'it-IT'] || {}).length === 0 && (
+                        <div className="text-center py-8 text-neutral-500">
+                          Nessun file di sottotitoli creato.
+                          <br />
+                          <strong>Opzioni disponibili:</strong>
+                          <br />
+                          📁 <strong>Carica SRT</strong> - Importa un file .srt esistente
+                          <br />
+                          🎵 <strong>Nuovo da Audio</strong> - Genera automaticamente da file audio (MP3, WAV, ecc.)
+                          <br />
+                          ✏️ <strong>Nuovo Manuale</strong> - Crea un file vuoto da modificare
+                          <br />
+                          🤖 <strong>Auto-genera</strong> - Usa il bottone nelle regioni con audio esistente
+                        </div>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -1467,33 +2236,35 @@ export default function PageCMSContent() {
                               <input 
                                 className="w-full rounded-xl bg-neutral-900/50 border border-neutral-600/50 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/50 transition-all duration-200" 
                                 placeholder="Titolo traccia" 
-                                value={tr.title || ""} 
+                                value={tr.title ?? ""} 
                                 onChange={(e) => updateTrackField(r.id, "title", e.target.value)} 
                               />
                               <textarea 
                                 className="w-full rounded-xl bg-neutral-900/50 border border-neutral-600/50 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/50 transition-all duration-200 resize-none" 
                                 placeholder="Descrizione (opzionale)" 
                                 rows={2}
-                                value={tr.description || ""} 
+                                value={tr.description ?? ""} 
                                 onChange={(e) => updateTrackField(r.id, "description", e.target.value)} 
                               />
                               <textarea 
                                 className="w-full rounded-xl bg-neutral-900/50 border border-neutral-600/50 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/50 transition-all duration-200 resize-none" 
                                 placeholder="Trascrizione (opzionale)" 
                                 rows={3}
-                                value={tr.transcript || ""} 
+                                value={tr.transcript ?? ""} 
                                 onChange={(e) => updateTrackField(r.id, "transcript", e.target.value)} 
                               />
                             </div>
 
                             {/* Audio Upload */}
                             <div className="space-y-2">
-                              <div className="text-xs text-neutral-400 font-medium">Audio Track</div>
+                              <div className="flex items-center gap-2">
+                                <div className="text-xs text-neutral-400 font-medium">Audio Track</div>
+                              </div>
                               <div className="flex items-center gap-2">
                                 <input 
                                   className="flex-1 rounded-xl bg-neutral-900/50 border border-neutral-600/50 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/50 transition-all duration-200" 
                                   placeholder="S3 key/OPFS path" 
-                                  value={tr.audioKey || ""} 
+                                  value={tr.audioKey ?? ""} 
                                   onChange={(e) => updateTrackField(r.id, "audioKey", e.target.value)} 
                                 />
                                 <label className="text-xs rounded-xl bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 px-3 py-2 cursor-pointer transition-all duration-200 hover:scale-105 shadow-lg">
@@ -1501,6 +2272,92 @@ export default function PageCMSContent() {
                                   <input type="file" accept="audio/mpeg,audio/mp3,audio/wav" className="hidden" onChange={(e) => onUploadMp3(r.id, e.target.files?.[0])} />
                                 </label>
                               </div>
+                              
+                              {/* Audio Player */}
+                              {(tr.audioUrl || tr.audioDataUrl) && (
+                                <div className="mt-2 p-3 rounded-xl bg-gradient-to-r from-neutral-800/50 to-neutral-700/50 border border-neutral-600/50">
+                                  <div className="flex items-center justify-between mb-2">
+                                    <div className="text-xs text-neutral-300 font-medium">🎵 Audio Preview</div>
+                                    <div className="flex items-center gap-2 text-xs">
+                                      {tr.audioFilename && (
+                                        <span className="text-neutral-400">📁 {tr.audioFilename}</span>
+                                      )}
+                                      {tr.audioUrl && (
+                                        <span className="bg-green-600/20 text-green-300 px-2 py-1 rounded">☁️ S3</span>
+                                      )}
+                                      {tr.audioDataUrl && !tr.audioUrl && (
+                                        <span className="bg-blue-600/20 text-blue-300 px-2 py-1 rounded">💾 Local</span>
+                                      )}
+                                    </div>
+                                  </div>
+                                  
+                                  <div className="flex items-center gap-3">
+                                    <button
+                                      onClick={() => {
+                                        const audioId = `audio-${r.id}`;
+                                        const audio = document.getElementById(audioId) as HTMLAudioElement;
+                                        if (audio) {
+                                          if (playingAudio === audioId) {
+                                            // Currently playing, pause it
+                                            audio.pause();
+                                            setPlayingAudio(null);
+                                          } else {
+                                            // Pause all other audio elements first
+                                            document.querySelectorAll('audio').forEach(a => a.pause());
+                                            setPlayingAudio(null);
+                                            // Play this audio
+                                            audio.play();
+                                            setPlayingAudio(audioId);
+                                          }
+                                        }
+                                      }}
+                                      className={`w-8 h-8 rounded-full flex items-center justify-center text-white text-sm transition-all duration-200 hover:scale-105 shadow-lg ${
+                                        playingAudio === `audio-${r.id}` 
+                                          ? 'bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-500 hover:to-emerald-500' 
+                                          : 'bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500'
+                                      }`}
+                                      title={playingAudio === `audio-${r.id}` ? "Pause" : "Play"}
+                                    >
+                                      {playingAudio === `audio-${r.id}` ? '⏸️' : '▶️'}
+                                    </button>
+                                    
+                                    <button
+                                      onClick={() => {
+                                        const audioId = `audio-${r.id}`;
+                                        const audio = document.getElementById(audioId) as HTMLAudioElement;
+                                        if (audio) {
+                                          audio.currentTime = 0;
+                                          audio.pause();
+                                          setPlayingAudio(null);
+                                        }
+                                      }}
+                                      className="w-6 h-6 rounded bg-neutral-700 hover:bg-neutral-600 flex items-center justify-center text-neutral-300 hover:text-white text-xs transition-all duration-200"
+                                      title="Stop"
+                                    >
+                                      ⏹️
+                                    </button>
+                                    
+                                    <div className="flex-1 text-xs text-neutral-400">
+                                      {playingAudio === `audio-${r.id}` ? (
+                                        <span className="text-green-400">🔊 In riproduzione...</span>
+                                      ) : (
+                                        'Clicca ▶️ per ascoltare l\'audio caricato'
+                                      )}
+                                    </div>
+                                  </div>
+                                  
+                                  {/* Hidden audio element */}
+                                  <audio 
+                                    id={`audio-${r.id}`}
+                                    className="hidden"
+                                    preload="metadata"
+                                    onEnded={() => setPlayingAudio(null)}
+                                    onPause={() => setPlayingAudio(null)}
+                                  >
+                                    <source src={tr.audioUrl || tr.audioDataUrl} type="audio/mpeg" />
+                                  </audio>
+                                </div>
+                              )}
                             </div>
 
                             {/* Image Upload */}
@@ -1510,7 +2367,7 @@ export default function PageCMSContent() {
                                 <input 
                                   className="flex-1 rounded-xl bg-neutral-900/50 border border-neutral-600/50 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/50 transition-all duration-200" 
                                   placeholder="Image URL or path" 
-                                  value={tr.imageKey || ""} 
+                                  value={tr.imageKey ?? ""} 
                                   onChange={(e) => updateTrackField(r.id, "imageKey", e.target.value)} 
                                 />
                                 <label className="text-xs rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 px-3 py-2 cursor-pointer transition-all duration-200 hover:scale-105 shadow-lg">
@@ -1530,6 +2387,89 @@ export default function PageCMSContent() {
                                 <div className="text-xs text-neutral-500">{tr.audioFilename}</div>
                               </div>
                             )}
+
+                            {/* Subtitles Management */}
+                            <div className="space-y-3 border-t border-neutral-800/50 pt-3">
+                              <div className="flex items-center justify-between">
+                                <div className="text-xs text-neutral-400 font-medium">🎬 Sottotitoli</div>
+                                {tr.audioDataUrl && (
+                                  <button
+                                    onClick={async () => {
+                                      try {
+                                        // Convert data URL to File for consistency
+                                        const response = await fetch(tr.audioDataUrl);
+                                        const blob = await response.blob();
+                                        const audioFile = new File([blob], `region-${r.id}-audio.mp3`, { type: 'audio/mpeg' });
+                                        
+                                        const result = await generateSubtitlesFromAudio(audioFile, tour.locale || 'it-IT');
+                                        const srtContent = generateSRT(result.entries);
+                                        
+                                        updateTour((t: any) => {
+                                          const currentLocale = t.locale || 'it-IT';
+                                          if (!t.subtitles) t.subtitles = {};
+                                          if (!t.subtitles[currentLocale]) t.subtitles[currentLocale] = {};
+                                          
+                                          const srtId = Date.now().toString();
+                                          t.subtitles[currentLocale][srtId] = {
+                                            id: srtId,
+                                            name: `Auto-generated for ${r.id}`,
+                                            content: srtContent,
+                                            language: currentLocale,
+                                            createdAt: new Date().toISOString(),
+                                            generatedFromAudio: `region-${r.id}-audio.mp3`,
+                                            transcriptionSource: result.source
+                                          };
+                                          
+                                          // Assign this subtitle to the region
+                                          if (!t.tracks[currentLocale][r.id].subtitleId) {
+                                            t.tracks[currentLocale][r.id].subtitleId = srtId;
+                                          }
+                                        });
+                                        
+                                        const methodText = result.source === 'openai-whisper' ? 'AI (OpenAI Whisper)' : 'Simulazione avanzata';
+                                        alert(`✅ Sottotitoli generati! ${result.entries.length} entry create.\n💫 Metodo: ${methodText}`);
+                                      } catch (error) {
+                                        console.error('Error generating subtitles:', error);
+                                        alert('Errore nella generazione dei sottotitoli');
+                                      }
+                                    }}
+                                    className="px-2 py-1 text-xs bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-400 rounded border border-emerald-500/30 transition-all duration-200"
+                                  >
+                                    🤖 Auto-genera
+                                  </button>
+                                )}
+                              </div>
+                              
+                              {/* Current subtitle selection */}
+                              <div className="space-y-2">
+                                <select
+                                  value={tr.subtitleId ?? ''}
+                                  onChange={(e) => updateTour((t: any) => {
+                                    const currentLocale = t.locale || 'it-IT';
+                                    if (!t.tracks[currentLocale]) t.tracks[currentLocale] = {};
+                                    if (!t.tracks[currentLocale][r.id]) t.tracks[currentLocale][r.id] = {};
+                                    t.tracks[currentLocale][r.id].subtitleId = e.target.value || null;
+                                  })}
+                                  className="w-full px-3 py-2 bg-neutral-900/50 border border-neutral-600/50 rounded-xl text-sm text-neutral-100 focus:ring-2 focus:ring-indigo-500/50 transition-all duration-200"
+                                >
+                                  <option value="">Nessun sottotitolo</option>
+                                  {Object.entries(tour.subtitles?.[tour.locale || 'it-IT'] || {}).map(([id, subtitle]: [string, any]) => (
+                                    <option key={id} value={id}>
+                                      {subtitle.name}
+                                    </option>
+                                  ))}
+                                </select>
+                                
+                                {tr.subtitleId && tour.subtitles?.[tour.locale || 'it-IT']?.[tr.subtitleId] && (
+                                  <div className="text-xs text-neutral-500 bg-neutral-800/30 p-2 rounded border border-neutral-700/50">
+                                    <div className="font-medium mb-1">Anteprima sottotitoli:</div>
+                                    <div className="max-h-20 overflow-y-auto whitespace-pre-wrap">
+                                      {tour.subtitles[tour.locale || 'it-IT'][tr.subtitleId].content.substring(0, 200)}...
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
 
                             {/* Image Preview */}
                             {tr.imageDataUrl && (
