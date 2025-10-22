@@ -1,15 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { S3Client, DeleteObjectCommand, DeleteObjectsCommand } from '@aws-sdk/client-s3';
-
-const s3Client = new S3Client({
-  region: process.env.AWS_REGION || 'eu-north-1',
-  credentials: {
-    accessKeyId: process.env.AWS_ACCESS_KEY_ID || '',
-    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY || ''
-  }
-});
-
-const BUCKET_NAME = process.env.BUNDLES_S3_URL?.split('://')[1]?.split('/')[0] || 'gigiorda-walkspace';
+import { getSupabaseAdmin, parseStorageUrl } from '@/lib/supabase';
 
 export async function POST(request: NextRequest) {
   try {
@@ -22,33 +12,46 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    console.log(`🗑️ Deleting ${keys.length} S3 files for tour: ${tourTitle || 'Unknown'}`);
+    const storageUrl = process.env.STORAGE_URL;
+    if (!storageUrl) {
+      return NextResponse.json({ error: 'STORAGE_URL not configured' }, { status: 400 });
+    }
 
+    const { bucket } = parseStorageUrl(storageUrl);
+    if (!bucket) {
+      return NextResponse.json({ error: 'Invalid STORAGE_URL' }, { status: 400 });
+    }
+
+    console.log(`🗑️ Deleting ${keys.length} Supabase Storage files for tour: ${tourTitle || 'Unknown'}`);
+
+    const supabase = getSupabaseAdmin();
     const deleteResults = [];
     const errors = [];
 
-    // Delete files one by one (could be optimized with DeleteObjectsCommand for bulk)
+    // Delete files one by one
     for (const key of keys) {
       try {
-        console.log(`🗑️ Deleting S3 file: ${key}`);
-        
-        const deleteCommand = new DeleteObjectCommand({
-          Bucket: BUCKET_NAME,
-          Key: key
-        });
+        console.log(`🗑️ Deleting file: ${key}`);
 
-        await s3Client.send(deleteCommand);
-        deleteResults.push({ key, status: 'deleted' });
-        console.log(`✅ Deleted: ${key}`);
-        
-      } catch (error) {
+        const { error } = await supabase.storage
+          .from(bucket)
+          .remove([key]);
+
+        if (error) {
+          console.error(`❌ Failed to delete ${key}:`, error);
+          errors.push({ key, error: error.message });
+        } else {
+          deleteResults.push({ key, status: 'deleted' });
+          console.log(`✅ Deleted: ${key}`);
+        }
+      } catch (error: any) {
         console.error(`❌ Failed to delete ${key}:`, error);
         errors.push({ key, error: error.message });
       }
     }
 
     const response = {
-      bucket: BUCKET_NAME,
+      bucket,
       tourTitle,
       deleted: deleteResults,
       errors,
@@ -73,19 +76,19 @@ export async function POST(request: NextRequest) {
       }, { status: 207 }); // 207 Multi-Status
     }
 
-  } catch (error) {
-    console.error('❌ S3 delete operation failed:', error);
+  } catch (error: any) {
+    console.error('❌ Storage delete operation failed:', error);
     return NextResponse.json(
-      { 
-        error: 'Failed to delete S3 files',
-        details: error.message 
+      {
+        error: 'Failed to delete storage files',
+        details: error.message
       },
       { status: 500 }
     );
   }
 }
 
-// Optional: Add bulk delete support for better performance
+// Bulk delete support using Supabase's batch removal
 export async function DELETE(request: NextRequest) {
   try {
     const { keys, tourTitle } = await request.json();
@@ -97,28 +100,45 @@ export async function DELETE(request: NextRequest) {
       );
     }
 
-    console.log(`🗑️ Bulk deleting ${keys.length} S3 files for tour: ${tourTitle || 'Unknown'}`);
+    const storageUrl = process.env.STORAGE_URL;
+    if (!storageUrl) {
+      return NextResponse.json({ error: 'STORAGE_URL not configured' }, { status: 400 });
+    }
 
-    // S3 supports bulk delete up to 1000 objects at once
-    const deleteCommand = new DeleteObjectsCommand({
-      Bucket: BUCKET_NAME,
-      Delete: {
-        Objects: keys.map(key => ({ Key: key })),
-        Quiet: false // Get detailed response
-      }
-    });
+    const { bucket } = parseStorageUrl(storageUrl);
+    if (!bucket) {
+      return NextResponse.json({ error: 'Invalid STORAGE_URL' }, { status: 400 });
+    }
 
-    const result = await s3Client.send(deleteCommand);
+    console.log(`🗑️ Bulk deleting ${keys.length} Supabase Storage files for tour: ${tourTitle || 'Unknown'}`);
+
+    const supabase = getSupabaseAdmin();
+
+    // Supabase supports bulk delete
+    const { data, error } = await supabase.storage
+      .from(bucket)
+      .remove(keys);
+
+    if (error) {
+      console.error('❌ Bulk delete failed:', error);
+      return NextResponse.json(
+        {
+          error: 'Failed to bulk delete storage files',
+          details: error.message
+        },
+        { status: 500 }
+      );
+    }
 
     const response = {
-      bucket: BUCKET_NAME,
+      bucket,
       tourTitle,
-      deleted: result.Deleted || [],
-      errors: result.Errors || [],
+      deleted: data || [],
+      errors: [],
       summary: {
         total: keys.length,
-        successful: (result.Deleted || []).length,
-        failed: (result.Errors || []).length
+        successful: (data || []).length,
+        failed: 0
       }
     };
 
@@ -129,12 +149,12 @@ export async function DELETE(request: NextRequest) {
       ...response
     });
 
-  } catch (error) {
-    console.error('❌ S3 bulk delete operation failed:', error);
+  } catch (error: any) {
+    console.error('❌ Storage bulk delete operation failed:', error);
     return NextResponse.json(
-      { 
-        error: 'Failed to bulk delete S3 files',
-        details: error.message 
+      {
+        error: 'Failed to bulk delete storage files',
+        details: error.message
       },
       { status: 500 }
     );

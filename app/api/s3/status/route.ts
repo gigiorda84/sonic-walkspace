@@ -1,86 +1,82 @@
 import { NextResponse } from 'next/server';
-import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
-
-function parseS3(u?: string) {
-  if (!u) return { bucket: '', prefix: '' };
-  const m = u.match(/^s3:\/\/([^\/]+)(?:\/(.*))?$/);
-  if (!m) return { bucket: '', prefix: '' };
-  return { bucket: m[1], prefix: (m[2] || '').replace(/^\/+|\/+$/g, '') };
-}
+import { getSupabaseAdmin, parseStorageUrl } from '@/lib/supabase';
 
 export async function GET() {
   try {
-    const baseS3 = process.env.BUNDLES_S3_URL;
-    if (!baseS3) {
-      return NextResponse.json({ 
-        status: 'error', 
-        message: 'BUNDLES_S3_URL not configured',
+    // Check environment variables
+    const storageUrl = process.env.STORAGE_URL;
+    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+    if (!storageUrl) {
+      return NextResponse.json({
+        status: 'error',
+        message: 'STORAGE_URL not configured',
         config: {
-          awsRegion: process.env.AWS_REGION || 'NOT SET',
-          awsAccessKeyId: process.env.AWS_ACCESS_KEY_ID ? 'SET' : 'NOT SET',
-          awsSecretAccessKey: process.env.AWS_SECRET_ACCESS_KEY ? 'SET' : 'NOT SET',
-          s3PublicRead: process.env.S3_PUBLIC_READ || 'NOT SET'
+          supabaseUrl: supabaseUrl ? 'SET' : 'NOT SET',
+          serviceRoleKey: serviceRoleKey ? 'SET' : 'NOT SET',
+          storageUrl: 'NOT SET'
         }
       }, { status: 400 });
     }
 
-    const { bucket, prefix } = parseS3(baseS3);
+    const { bucket, path: prefix } = parseStorageUrl(storageUrl);
     if (!bucket) {
-      return NextResponse.json({ 
-        status: 'error', 
-        message: 'Invalid S3 URL format',
-        s3Url: baseS3
+      return NextResponse.json({
+        status: 'error',
+        message: 'Invalid STORAGE_URL format',
+        storageUrl
       }, { status: 400 });
     }
 
-    // Create S3 client
-    const client = new S3Client({ 
-      region: process.env.AWS_REGION || 'eu-west-1', 
-      credentials: process.env.AWS_ACCESS_KEY_ID ? { 
-        accessKeyId: process.env.AWS_ACCESS_KEY_ID!, 
-        secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY! 
-      } : undefined 
-    });
+    // Test connection by listing buckets or uploading a test file
+    const supabase = getSupabaseAdmin();
+    const testPath = `${prefix ? prefix + '/' : ''}test/status-check.txt`;
+    const testContent = `Supabase Status Check - ${new Date().toISOString()}`;
 
-    // Test connection by attempting a small upload
-    const testKey = `${prefix ? prefix + '/' : ''}test/status-check.txt`;
-    const testContent = `S3 Status Check - ${new Date().toISOString()}`;
-    
-    const command = new PutObjectCommand({
-      Bucket: bucket,
-      Key: testKey,
-      Body: testContent,
-      ContentType: 'text/plain'
-    });
+    const { data, error } = await supabase.storage
+      .from(bucket)
+      .upload(testPath, testContent, {
+        contentType: 'text/plain',
+        upsert: true
+      });
 
-    await client.send(command);
-    
+    if (error) {
+      return NextResponse.json({
+        status: 'error',
+        message: `Storage test failed: ${error.message}`,
+        config: {
+          supabaseUrl: supabaseUrl ? 'SET' : 'NOT SET',
+          serviceRoleKey: serviceRoleKey ? 'SET' : 'NOT SET',
+          storageUrl: storageUrl
+        }
+      }, { status: 500 });
+    }
+
     return NextResponse.json({
       status: 'success',
       bucket,
       prefix,
       config: {
-        awsRegion: process.env.AWS_REGION || 'eu-west-1',
-        awsAccessKeyId: process.env.AWS_ACCESS_KEY_ID ? 'SET' : 'NOT SET',
-        awsSecretAccessKey: process.env.AWS_SECRET_ACCESS_KEY ? 'SET' : 'NOT SET',
-        s3PublicRead: process.env.S3_PUBLIC_READ || 'NOT SET'
+        supabaseUrl: supabaseUrl || 'NOT SET',
+        serviceRoleKey: serviceRoleKey ? 'SET' : 'NOT SET',
+        storageUrl: storageUrl
       },
-      bucketInfo: {
-        message: 'Upload test successful - S3 is working correctly',
-        testFile: testKey,
-        note: 'List permissions not available, but uploads work fine'
+      storageInfo: {
+        message: 'Upload test successful - Supabase Storage is working correctly',
+        testFile: testPath,
+        uploadedPath: data.path
       }
     });
 
   } catch (error: any) {
-    return NextResponse.json({ 
-      status: 'error', 
+    return NextResponse.json({
+      status: 'error',
       message: error.message || 'Unknown error',
       config: {
-        awsRegion: process.env.AWS_REGION || 'NOT SET',
-        awsAccessKeyId: process.env.AWS_ACCESS_KEY_ID ? 'SET' : 'NOT SET',
-        awsSecretAccessKey: process.env.AWS_SECRET_ACCESS_KEY ? 'SET' : 'NOT SET',
-        s3PublicRead: process.env.S3_PUBLIC_READ || 'NOT SET'
+        supabaseUrl: process.env.NEXT_PUBLIC_SUPABASE_URL ? 'SET' : 'NOT SET',
+        serviceRoleKey: process.env.SUPABASE_SERVICE_ROLE_KEY ? 'SET' : 'NOT SET',
+        storageUrl: process.env.STORAGE_URL || 'NOT SET'
       }
     }, { status: 500 });
   }

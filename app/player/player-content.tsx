@@ -315,8 +315,83 @@ function saveCMSTours(tours: any[]) {
 
 export default function SonicWalkscapeWebPlayer(){
   const preview = IS_CLIENT ? getPreviewTour() : null;
-  const cmsTours = IS_CLIENT ? getCMSTours() : null;
-  
+  const localCMSTours = IS_CLIENT ? getCMSTours() : null;
+
+  // S3 tours state - loads tours shared across all users
+  const [s3Tours, setS3Tours] = useState<any[] | null>(null);
+  const [isLoadingS3Tours, setIsLoadingS3Tours] = useState(true);
+
+  // Combine local and S3 tours
+  const cmsTours = useMemo(() => {
+    const tours = [];
+
+    // Add local tours (for backward compatibility)
+    if (localCMSTours && Array.isArray(localCMSTours)) {
+      tours.push(...localCMSTours);
+    }
+
+    // Add S3 tours (shared across all users)
+    if (s3Tours && Array.isArray(s3Tours)) {
+      // Filter out duplicates based on slug
+      const existingSlugs = new Set(tours.map((t: any) => t.slug));
+      const uniqueS3Tours = s3Tours.filter((t: any) => !existingSlugs.has(t.slug));
+      tours.push(...uniqueS3Tours);
+    }
+
+    return tours.length > 0 ? tours : null;
+  }, [localCMSTours, s3Tours]);
+
+  // Load tours from S3 on mount
+  useEffect(() => {
+    if (!IS_CLIENT) return;
+
+    async function loadS3Tours() {
+      try {
+        console.log('🌐 Loading tours from S3...');
+        const response = await fetch('/api/tours/list');
+
+        if (!response.ok) {
+          console.error('Failed to load tours from S3:', response.statusText);
+          setIsLoadingS3Tours(false);
+          return;
+        }
+
+        const data = await response.json();
+        console.log(`✅ Loaded ${data.tours?.length || 0} tours from S3`);
+
+        if (data.tours && data.tours.length > 0) {
+          // Fetch full manifests for each tour
+          const fullTours = await Promise.all(
+            data.tours.map(async (tourSummary: any) => {
+              try {
+                const manifestResponse = await fetch(`/api/tours/${tourSummary.slug}`);
+                if (manifestResponse.ok) {
+                  const manifestData = await manifestResponse.json();
+                  return manifestData.tour;
+                }
+                return null;
+              } catch (error) {
+                console.error(`Failed to load manifest for ${tourSummary.slug}:`, error);
+                return null;
+              }
+            })
+          );
+
+          setS3Tours(fullTours.filter(t => t !== null));
+        } else {
+          setS3Tours([]);
+        }
+      } catch (error) {
+        console.error('Error loading tours from S3:', error);
+        setS3Tours([]);
+      } finally {
+        setIsLoadingS3Tours(false);
+      }
+    }
+
+    loadS3Tours();
+  }, []);
+
   // Audio context and state
   const [audioContext, setAudioContext] = useState<AudioContext | null>(null);
   const [currentAudio, setCurrentAudio] = useState<HTMLAudioElement | null>(null);

@@ -627,30 +627,88 @@ export default function PageCMSContent() {
   const [tab, setTab] = useState("editor");
   const [isDeletingTour, setIsDeletingTour] = useState<string | null>(null);
   const [playingAudio, setPlayingAudio] = useState<string | null>(null);
-  
+
+  // Subtitle editor modal state
+  const [isEditingSubtitle, setIsEditingSubtitle] = useState(false);
+  const [editingSubtitleId, setEditingSubtitleId] = useState<string | null>(null);
+  const [editingSubtitleContent, setEditingSubtitleContent] = useState('');
+
+  // Upload progress state
+  const [uploadingAudio, setUploadingAudio] = useState<string | null>(null);
+
   useEffect(() => {
     if (IS_CLIENT) {
-      // Try to load tours from localStorage first
-      try {
-        const savedTours = localStorage.getItem('WS_CMS_TOURS');
-        if (savedTours) {
-          const parsedTours = JSON.parse(savedTours);
-          if (parsedTours && parsedTours.length > 0) {
-            // Filter out null/undefined tours and ensure they have IDs
-            const validTours = parsedTours.filter(t => t && t.id);
-            if (validTours.length > 0) {
-              setTours(validTours);
-              setSelectedId(validTours[0].id);
-              return;
+      // Load tours from both localStorage and S3
+      const loadTours = async () => {
+        let localTours: any[] = [];
+        let s3Tours: any[] = [];
+
+        // Try to load tours from localStorage first
+        try {
+          const savedTours = localStorage.getItem('WS_CMS_TOURS');
+          if (savedTours) {
+            const parsedTours = JSON.parse(savedTours);
+            if (parsedTours && Array.isArray(parsedTours)) {
+              // Filter out null/undefined tours and ensure they have IDs
+              localTours = parsedTours.filter(t => t && t.id);
+              console.log(`📦 Loaded ${localTours.length} tours from localStorage`);
             }
           }
+        } catch (err) {
+          console.error('Failed to load tours from localStorage:', err);
         }
-      } catch (err) {
-        console.error('Failed to load tours from localStorage:', err);
-      }
-      
-      // Fallback to creating a new tour
-      seedTour().then((initialTour) => {
+
+        // Try to load tours from S3
+        try {
+          console.log('🌐 Loading published tours from S3...');
+          const response = await fetch('/api/tours/list');
+          if (response.ok) {
+            const data = await response.json();
+            if (data.tours && data.tours.length > 0) {
+              // Fetch full manifests for each tour
+              const fullTours = await Promise.all(
+                data.tours.map(async (tourSummary: any) => {
+                  try {
+                    const manifestResponse = await fetch(`/api/tours/${tourSummary.slug}`);
+                    if (manifestResponse.ok) {
+                      const manifestData = await manifestResponse.json();
+                      return manifestData.tour;
+                    }
+                    return null;
+                  } catch (error) {
+                    console.error(`Failed to load manifest for ${tourSummary.slug}:`, error);
+                    return null;
+                  }
+                })
+              );
+              s3Tours = fullTours.filter(t => t !== null);
+              console.log(`✅ Loaded ${s3Tours.length} tours from S3`);
+            }
+          }
+        } catch (err) {
+          console.error('Failed to load tours from S3:', err);
+        }
+
+        // Merge tours: prioritize localStorage, add S3 tours that aren't in localStorage
+        const mergedTours = [...localTours];
+        const localSlugs = new Set(localTours.map(t => t.slug));
+
+        s3Tours.forEach(s3Tour => {
+          if (!localSlugs.has(s3Tour.slug)) {
+            mergedTours.push(s3Tour);
+          }
+        });
+
+        if (mergedTours.length > 0) {
+          console.log(`📚 Total tours available: ${mergedTours.length} (${localTours.length} local + ${s3Tours.filter(t => !localSlugs.has(t.slug)).length} from S3)`);
+          setTours(mergedTours);
+          setSelectedId(mergedTours[0].id);
+          return;
+        }
+
+        // Only create demo tour if no tours found anywhere
+        console.log('⚠️ No tours found in localStorage or S3, creating demo tour...');
+        const initialTour = await seedTour();
         if (initialTour) {
           setTours([initialTour]);
           setSelectedId(initialTour.id);
@@ -661,23 +719,6 @@ export default function PageCMSContent() {
             id: 'fallback-' + Date.now(),
             slug: "fallback-tour",
             title: "Fallback Tour",
-            priceEUR: 0,
-            published: false,
-            locales: [{ code: "it-IT", title: "Fallback Tour", description: "Tour di fallback." }],
-            regions: [],
-            tracks: { "it-IT": {} },
-            vouchers: [],
-          };
-          setTours([fallbackTour]);
-          setSelectedId(fallbackTour.id);
-        }
-      }).catch((err) => {
-        console.error('Failed to seed tour:', err);
-        // Create a minimal fallback tour
-        const fallbackTour = {
-          id: 'fallback-' + Date.now(),
-          slug: "fallback-tour",
-          title: "Fallback Tour",
           priceEUR: 0,
           published: false,
           locales: [{ code: "it-IT", title: "Fallback Tour", description: "Tour di fallback." }],
@@ -687,7 +728,11 @@ export default function PageCMSContent() {
         };
         setTours([fallbackTour]);
         setSelectedId(fallbackTour.id);
-      });
+        }
+      };
+
+      // Call the async function
+      loadTours();
     }
   }, []);
   
@@ -857,6 +902,39 @@ export default function PageCMSContent() {
       
       return updated;
     });
+  };
+
+  // Publish tour to S3 for shared access
+  const publishTourToS3 = async (tourToPublish: any) => {
+    if (!tourToPublish || !tourToPublish.slug) {
+      console.error('Cannot publish tour: missing slug');
+      return { success: false, error: 'Tour must have a slug' };
+    }
+
+    try {
+      console.log('📤 Publishing tour to S3:', tourToPublish.title);
+
+      const response = await fetch('/api/tours/publish', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(tourToPublish),
+      });
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        console.error('Failed to publish tour:', result.error);
+        return { success: false, error: result.error };
+      }
+
+      console.log('✅ Tour published to S3:', result.manifestUrl);
+      return { success: true, ...result };
+    } catch (error) {
+      console.error('Error publishing tour to S3:', error);
+      return { success: false, error: error.message };
+    }
   };
 
   const addTour = async () => {
@@ -1173,77 +1251,81 @@ export default function PageCMSContent() {
 
   const onUploadMp3 = async (regionId: string, file: File | undefined) => {
     if (!file || !tour) return;
-    
+
     // Check file size (limit to 50MB for audio)
     const maxSize = 50 * 1024 * 1024; // 50MB
     if (file.size > maxSize) {
       alert(`File troppo grande! Il file audio deve essere inferiore a 50MB. Dimensione attuale: ${(file.size / 1024 / 1024).toFixed(2)}MB`);
       return;
     }
-    
+
     const fileSizeMB = file.size / 1024 / 1024;
-    console.log(`📤 Uploading audio to S3: ${file.name} (${fileSizeMB.toFixed(2)}MB)`);
-    
+    console.log(`📤 Uploading audio to Supabase Storage: ${file.name} (${fileSizeMB.toFixed(2)}MB)`);
+
+    // Show uploading state
+    setUploadingAudio(regionId);
+
     try {
-      // Get signed URL for S3 upload
+      // Convert file to base64 for API upload
+      const fileData = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result as string);
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+
+      // Upload to Supabase via API
       const uploadRequest = {
         slug: tour.slug || `tour-${tour.id}`,
         locale: tour.locale || 'it-IT',
         regionId: regionId,
         fileName: file.name,
-        contentType: file.type || 'audio/mpeg'
+        contentType: file.type || 'audio/mpeg',
+        fileData: fileData // Send base64 data directly
       };
 
-      const signResponse = await fetch('/api/upload/sign', {
+      const uploadResponse = await fetch('/api/upload/sign', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(uploadRequest)
       });
 
-      if (!signResponse.ok) {
-        const errorData = await signResponse.text();
-        throw new Error(`Failed to get upload URL: ${errorData}`);
-      }
-
-      const { url: uploadUrl, httpUrl, key } = await signResponse.json();
-
-      // Upload file to S3
-      const uploadResponse = await fetch(uploadUrl, {
-        method: 'PUT',
-        body: file,
-        headers: {
-          'Content-Type': uploadRequest.contentType
-        }
-      });
-
       if (!uploadResponse.ok) {
-        throw new Error(`Failed to upload file: ${uploadResponse.status} ${uploadResponse.statusText}`);
+        const errorData = await uploadResponse.text();
+        throw new Error(`Failed to upload: ${errorData}`);
       }
 
-      console.log(`✅ Audio uploaded successfully to S3: ${httpUrl}`);
+      const { url: publicUrl, key } = await uploadResponse.json();
 
-      // Update tour with S3 URL instead of data URL
+      console.log(`✅ Audio uploaded successfully to Supabase: ${publicUrl}`);
+
+      // Update tour with Supabase URL
       updateTour((t: any) => {
         if (!t || !t.tracks) return;
         const currentLocale = t.locale || 'it-IT';
         if (!t.tracks[currentLocale]) t.tracks[currentLocale] = {};
         if (!t.tracks[currentLocale][regionId]) t.tracks[currentLocale][regionId] = {};
-        
-        // Store S3 URL instead of data URL - no more localStorage quota issues!
-        t.tracks[currentLocale][regionId].audioUrl = httpUrl; // S3 URL for playback
-        t.tracks[currentLocale][regionId].audioKey = key; // S3 key for management
+
+        // Store Supabase URL instead of data URL - no more localStorage quota issues!
+        t.tracks[currentLocale][regionId].audioUrl = publicUrl; // Supabase public URL for playback
+        t.tracks[currentLocale][regionId].audioKey = key; // Storage path for management
         t.tracks[currentLocale][regionId].audioFilename = file.name;
-        
+
         // Remove any old data URL to save space
         delete t.tracks[currentLocale][regionId].audioDataUrl;
       });
-      
+
       // Simple success feedback
       console.log(`✅ Audio caricato con successo: ${file.name}`);
-      
+      alert(`✅ Audio caricato con successo!\n\nFile: ${file.name}\nDimensione: ${fileSizeMB.toFixed(2)}MB\nURL: ${publicUrl}`);
+
     } catch (err) {
       console.error("Upload error:", err);
-      alert("❌ Errore durante il caricamento del file audio.\n\nProva con un file più piccolo o ricarica la pagina.");
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      alert(`❌ Errore durante il caricamento del file audio.\n\nDettagli: ${errorMessage}\n\nFile: ${file.name} (${fileSizeMB.toFixed(2)}MB)\n\nSuggerimenti:\n- Verifica che il file sia un MP3 valido\n- Assicurati che sia inferiore a 50MB\n- Controlla la connessione internet\n- Riprova tra qualche secondo`);
+    } finally {
+      // Clear uploading state
+      setUploadingAudio(null);
     }
   };
 
@@ -1505,30 +1587,51 @@ export default function PageCMSContent() {
 
   // Function to edit subtitle content with better UX
   const editSubtitleContent = (id: string, currentContent: string) => {
-    // Simple prompt for editing SRT content
-    const newContent = prompt('Modifica i sottotitoli:', currentContent);
-    
-    if (newContent !== null && newContent.trim() !== '') {
-      // Validate the SRT format
-      try {
-        const parsedEntries = parseSRT(newContent);
-        if (parsedEntries.length === 0) {
-          alert('Il formato SRT non è valido. Controlla la sintassi.');
-          return;
-        }
-        
-        // Update the subtitle
-        updateTour((t: any) => {
-          const currentLocale = t.locale || 'it-IT';
-          if (t.subtitles?.[currentLocale]?.[id]) {
-            t.subtitles[currentLocale][id].content = newContent;
-          }
-        });
-        
-        alert(`Sottotitoli aggiornati con ${parsedEntries.length} segmenti.`);
-      } catch (error) {
-        alert('Errore nel formato SRT. Ricontrolla il contenuto.');
+    setEditingSubtitleId(id);
+    setEditingSubtitleContent(currentContent);
+    setIsEditingSubtitle(true);
+  };
+
+  // Save edited subtitle content
+  const saveSubtitleContent = () => {
+    if (!editingSubtitleId) return;
+
+    if (editingSubtitleContent.trim() === '') {
+      alert('Il contenuto non può essere vuoto.');
+      return;
+    }
+
+    // Validate the SRT format
+    try {
+      const parsedEntries = parseSRT(editingSubtitleContent);
+      if (parsedEntries.length === 0) {
+        alert('Il formato SRT non è valido. Controlla la sintassi.');
+        return;
       }
+
+      // Update the subtitle
+      updateTour((t: any) => {
+        const currentLocale = t.locale || 'it-IT';
+        if (t.subtitles?.[currentLocale]?.[editingSubtitleId]) {
+          t.subtitles[currentLocale][editingSubtitleId].content = editingSubtitleContent;
+        }
+      });
+
+      alert(`✅ Sottotitoli aggiornati con ${parsedEntries.length} segmenti.`);
+      setIsEditingSubtitle(false);
+      setEditingSubtitleId(null);
+      setEditingSubtitleContent('');
+    } catch (error) {
+      alert('❌ Errore nel formato SRT. Ricontrolla il contenuto.');
+    }
+  };
+
+  // Close subtitle editor modal
+  const closeSubtitleEditor = () => {
+    if (confirm('Sei sicuro di voler chiudere senza salvare?')) {
+      setIsEditingSubtitle(false);
+      setEditingSubtitleId(null);
+      setEditingSubtitleContent('');
     }
   };
 
@@ -1767,11 +1870,26 @@ export default function PageCMSContent() {
                             : 'bg-orange-600/20 border-orange-500/40 text-orange-300'
                         }`}>
                           <label className="flex items-center gap-2 text-sm font-medium cursor-pointer">
-                            <input 
-                              type="checkbox" 
-                              className="rounded bg-neutral-900/50 border border-neutral-600/50 focus:ring-2 focus:ring-indigo-500/50 transition-all duration-200" 
-                              checked={tour.published} 
-                              onChange={(e) => updateTour((t: any) => { t.published = e.target.checked; })} 
+                            <input
+                              type="checkbox"
+                              className="rounded bg-neutral-900/50 border border-neutral-600/50 focus:ring-2 focus:ring-indigo-500/50 transition-all duration-200"
+                              checked={tour.published}
+                              onChange={async (e) => {
+                                const isPublishing = e.target.checked;
+                                updateTour((t: any) => { t.published = isPublishing; });
+
+                                // If publishing, sync to S3
+                                if (isPublishing) {
+                                  const result = await publishTourToS3(tour);
+                                  if (!result.success) {
+                                    alert(`Failed to publish tour to S3: ${result.error}`);
+                                    // Revert the checkbox
+                                    updateTour((t: any) => { t.published = false; });
+                                  } else {
+                                    alert('✅ Tour published successfully! It is now available to all users.');
+                                  }
+                                }
+                              }}
                             />
                             {tour.published ? '📢 Tour Pubblicato' : '📝 Tour in Bozza'}
                           </label>
@@ -2267,9 +2385,19 @@ export default function PageCMSContent() {
                                   value={tr.audioKey ?? ""} 
                                   onChange={(e) => updateTrackField(r.id, "audioKey", e.target.value)} 
                                 />
-                                <label className="text-xs rounded-xl bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 px-3 py-2 cursor-pointer transition-all duration-200 hover:scale-105 shadow-lg">
-                                  Upload MP3
-                                  <input type="file" accept="audio/mpeg,audio/mp3,audio/wav" className="hidden" onChange={(e) => onUploadMp3(r.id, e.target.files?.[0])} />
+                                <label className={`text-xs rounded-xl px-3 py-2 transition-all duration-200 shadow-lg ${
+                                  uploadingAudio === r.id
+                                    ? 'bg-yellow-600/50 cursor-wait'
+                                    : 'bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 cursor-pointer hover:scale-105'
+                                }`}>
+                                  {uploadingAudio === r.id ? '⏳ Caricamento...' : '📤 Upload MP3'}
+                                  <input
+                                    type="file"
+                                    accept="audio/mpeg,audio/mp3,audio/wav"
+                                    className="hidden"
+                                    onChange={(e) => onUploadMp3(r.id, e.target.files?.[0])}
+                                    disabled={uploadingAudio === r.id}
+                                  />
                                 </label>
                               </div>
                               
@@ -2508,6 +2636,111 @@ export default function PageCMSContent() {
           </div>
         </div>
       </div>
+
+      {/* Subtitle Editor Modal - Large Size */}
+      {isEditingSubtitle && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4 sm:p-6">
+          <div className="bg-gradient-to-br from-neutral-900 via-neutral-800 to-neutral-900 rounded-2xl border border-neutral-700/50 shadow-2xl w-full max-w-6xl max-h-[90vh] flex flex-col">
+            {/* Modal Header */}
+            <div className="flex items-center justify-between p-6 border-b border-neutral-700/50">
+              <div>
+                <h2 className="text-2xl font-bold text-white">✏️ Modifica Sottotitoli</h2>
+                <p className="text-sm text-neutral-400 mt-1">Formato SRT - Modifica il contenuto dei sottotitoli</p>
+              </div>
+              <button
+                onClick={closeSubtitleEditor}
+                className="text-neutral-400 hover:text-white transition-colors duration-200 p-2 hover:bg-neutral-800/50 rounded-lg"
+              >
+                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            {/* Modal Body - Scrollable */}
+            <div className="flex-1 overflow-y-auto p-6">
+              <div className="space-y-4">
+                {/* Info Box */}
+                <div className="bg-blue-600/10 border border-blue-500/30 rounded-xl p-4">
+                  <div className="text-sm text-blue-300">
+                    <div className="font-medium mb-2">📝 Formato SRT</div>
+                    <div className="text-xs text-blue-400 space-y-1">
+                      <div>1. Numero sequenziale</div>
+                      <div>2. Timecode: 00:00:00,000 --&gt; 00:00:03,000</div>
+                      <div>3. Testo del sottotitolo</div>
+                      <div>4. Riga vuota tra i blocchi</div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Text Editor */}
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-neutral-300">
+                    Contenuto Sottotitoli
+                  </label>
+                  <textarea
+                    value={editingSubtitleContent}
+                    onChange={(e) => setEditingSubtitleContent(e.target.value)}
+                    className="w-full h-[500px] bg-neutral-900/50 border border-neutral-600/50 rounded-xl p-4 text-neutral-100 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500/50 transition-all duration-200 resize-none"
+                    placeholder="1
+00:00:00,000 --> 00:00:03,000
+Primo sottotitolo
+
+2
+00:00:03,500 --> 00:00:06,000
+Secondo sottotitolo"
+                    spellCheck={false}
+                  />
+                  <div className="flex items-center justify-between text-xs text-neutral-500">
+                    <div>Caratteri: {editingSubtitleContent.length}</div>
+                    <div>Linee: {editingSubtitleContent.split('\n').length}</div>
+                  </div>
+                </div>
+
+                {/* Preview */}
+                {editingSubtitleContent && (
+                  <div className="bg-neutral-800/30 border border-neutral-700/50 rounded-xl p-4">
+                    <div className="text-sm font-medium text-neutral-300 mb-3">👁️ Anteprima</div>
+                    <div className="space-y-2 max-h-40 overflow-y-auto">
+                      {(() => {
+                        try {
+                          const entries = parseSRT(editingSubtitleContent);
+                          return entries.slice(0, 5).map((entry, idx) => (
+                            <div key={idx} className="text-xs bg-neutral-900/50 p-2 rounded border border-neutral-700/30">
+                              <div className="text-indigo-400 mb-1">
+                                #{entry.id} • {entry.startTime} → {entry.endTime}
+                              </div>
+                              <div className="text-neutral-300">{entry.text}</div>
+                            </div>
+                          ));
+                        } catch {
+                          return <div className="text-xs text-red-400">❌ Formato non valido</div>;
+                        }
+                      })()}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Modal Footer */}
+            <div className="flex items-center justify-end gap-3 p-6 border-t border-neutral-700/50">
+              <button
+                onClick={closeSubtitleEditor}
+                className="px-6 py-2.5 bg-neutral-700/50 hover:bg-neutral-700 text-neutral-200 rounded-xl transition-all duration-200 font-medium"
+              >
+                Annulla
+              </button>
+              <button
+                onClick={saveSubtitleContent}
+                className="px-6 py-2.5 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white rounded-xl transition-all duration-200 font-medium shadow-lg hover:shadow-indigo-500/50"
+              >
+                💾 Salva Sottotitoli
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </ErrorBoundary>
   );
 }

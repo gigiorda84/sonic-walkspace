@@ -1,38 +1,80 @@
 import { NextResponse } from 'next/server';
-import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
-import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import { getSupabaseAdmin, parseStorageUrl, getSupabasePublicUrl } from '@/lib/supabase';
 
-function parseS3(u?: string) {
-  if (!u) return { bucket:'', prefix:'' };
-  const m = u.match(/^s3:\/\/([^\/]+)(?:\/(.*))?$/);
-  if (!m) return { bucket:'', prefix:'' };
-  return { bucket: m[1], prefix: (m[2] || '').replace(/^\/+|\/+$/g, '') };
-}
+// Configure route to accept large file uploads (50MB)
+export const maxDuration = 60; // 60 seconds timeout
+export const dynamic = 'force-dynamic';
 
 export async function POST(req: Request) {
   try {
-    const { slug, locale, regionId, fileName, contentType } = await req.json();
-    const baseS3 = process.env.BUNDLES_S3_URL;
-    if (!baseS3) return NextResponse.json({ error: 'BUNDLES_S3_URL not set' }, { status: 400 });
-    const { bucket, prefix } = parseS3(baseS3);
-    if (!bucket) return NextResponse.json({ error: 'Invalid S3 URL' }, { status: 400 });
+    const { slug, locale, regionId, fileName, contentType, fileData } = await req.json();
 
+    // Get storage configuration
+    const storageUrl = process.env.STORAGE_URL;
+    if (!storageUrl) {
+      return NextResponse.json({ error: 'STORAGE_URL not set' }, { status: 400 });
+    }
+
+    const { bucket, path: prefix } = parseStorageUrl(storageUrl);
+    if (!bucket) {
+      return NextResponse.json({ error: 'Invalid STORAGE_URL format' }, { status: 400 });
+    }
+
+    // Determine file extension
     const extGuess = (fileName && fileName.includes('.')) ? fileName.split('.').pop() : null;
     const ext = (extGuess || (contentType === 'audio/wav' ? 'wav' : 'mp3')).toLowerCase();
-    const key = `${prefix ? prefix + '/' : ''}${slug}/${locale}/audio/${regionId}.${ext}`;
 
-    const client = new S3Client({ region: process.env.AWS_REGION || 'eu-west-1', credentials: process.env.AWS_ACCESS_KEY_ID ? { accessKeyId: process.env.AWS_ACCESS_KEY_ID!, secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY! } : undefined });
-    const command = new PutObjectCommand({ 
-      Bucket: bucket, 
-      Key: key, 
-      ContentType: contentType || 'audio/mpeg'
-      // No ACL - bucket has ACLs disabled
+    // Build storage path: prefix/slug/locale/audio/regionId.ext
+    const filePath = `${prefix ? prefix + '/' : ''}${slug}/${locale}/audio/${regionId}.${ext}`;
+
+    // If fileData is provided, upload directly (new behavior)
+    if (fileData) {
+      const supabase = getSupabaseAdmin();
+
+      // Convert base64 to buffer
+      const base64Data = fileData.includes('base64,') ? fileData.split('base64,')[1] : fileData;
+      const buffer = Buffer.from(base64Data, 'base64');
+
+      // Upload to Supabase Storage
+      const { data, error } = await supabase.storage
+        .from(bucket)
+        .upload(filePath, buffer, {
+          contentType: contentType || 'audio/mpeg',
+          upsert: true, // Allow overwriting existing files
+        });
+
+      if (error) {
+        console.error('Supabase upload error:', error);
+        return NextResponse.json({ error: error.message }, { status: 500 });
+      }
+
+      // Get public URL
+      const publicUrl = getSupabasePublicUrl(bucket, filePath);
+
+      return NextResponse.json({
+        success: true,
+        path: data.path,
+        url: publicUrl,
+        key: filePath
+      });
+    }
+
+    // Return metadata for client-side upload (backward compatibility)
+    // Note: Supabase Storage doesn't support presigned URLs the same way as S3
+    // Client should upload via direct Supabase client instead
+    const publicUrl = getSupabasePublicUrl(bucket, filePath);
+
+    return NextResponse.json({
+      bucket,
+      path: filePath,
+      url: publicUrl,
+      key: filePath,
+      // Signal to client to use direct Supabase upload
+      useDirectUpload: true
     });
-    const url = await getSignedUrl(client, command, { expiresIn: 900 });
 
-    const httpUrl = `https://${bucket}.s3.amazonaws.com/${key}`;
-    return NextResponse.json({ url, method: 'PUT', key, httpUrl, headers: {} });
-  } catch (e:any) {
+  } catch (e: any) {
+    console.error('Upload sign error:', e);
     return NextResponse.json({ error: String(e?.message || e) }, { status: 500 });
   }
 }

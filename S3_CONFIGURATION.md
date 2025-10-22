@@ -139,18 +139,63 @@ CLOUDFRONT_DOMAIN=your-cloudfront-domain.cloudfront.net
 
 ### CORS Configuration
 
+**⚠️ IMPORTANTE**: CORS è **NECESSARIO** per upload di file audio dal browser!
+
 Add CORS policy to your S3 bucket:
+
+#### Via AWS Console (Raccomandato):
+
+1. Vai a: https://s3.console.aws.amazon.com/s3/buckets/gigiorda-walkspace
+2. Click tab **Permissions**
+3. Scroll to **Cross-origin resource sharing (CORS)**
+4. Click **Edit**
+5. Incolla questo JSON:
 
 ```json
 [
     {
         "AllowedHeaders": ["*"],
-        "AllowedMethods": ["GET", "PUT", "POST", "DELETE"],
-        "AllowedOrigins": ["http://localhost:3000", "https://yourdomain.com"],
-        "ExposeHeaders": []
+        "AllowedMethods": ["GET", "PUT", "POST", "DELETE", "HEAD"],
+        "AllowedOrigins": [
+            "https://sonic-walkscape-full-s3-mfbb829tf-gigiordas-projects.vercel.app",
+            "https://sonic-walkscape-full-s3-*.vercel.app",
+            "http://localhost:3000"
+        ],
+        "ExposeHeaders": [
+            "ETag",
+            "x-amz-server-side-encryption",
+            "x-amz-request-id",
+            "x-amz-id-2"
+        ],
+        "MaxAgeSeconds": 3600
     }
 ]
 ```
+
+6. Click **Save changes**
+7. Aspetta 30-60 secondi per propagazione
+
+**Nota**: Aggiorna `AllowedOrigins` con il tuo dominio di produzione Vercel!
+
+#### Via AWS CLI:
+
+```bash
+# Crea file cors.json con il JSON sopra, poi:
+aws s3api put-bucket-cors \
+  --bucket gigiorda-walkspace \
+  --cors-configuration file://cors.json \
+  --region eu-north-1
+```
+
+#### Verifica CORS:
+
+```bash
+aws s3api get-bucket-cors \
+  --bucket gigiorda-walkspace \
+  --region eu-north-1
+```
+
+**Se vedi errore CORS durante upload**, consulta: **S3_CORS_FIX.md**
 
 ## 🧪 Testing
 
