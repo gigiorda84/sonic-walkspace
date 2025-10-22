@@ -12,7 +12,8 @@ export async function GET() {
     const supabase = getSupabaseAdmin();
 
     // Try to fetch the tours index
-    const indexPath = `${prefix}/tours/index.json`;
+    // Note: prefix already contains "tours", so just add index.json
+    const indexPath = `${prefix}/index.json`;
 
     try {
       const { data, error } = await supabase.storage

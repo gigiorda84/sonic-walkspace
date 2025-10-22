@@ -27,7 +27,8 @@ export async function POST(req: NextRequest) {
     }
 
     // Save tour manifest to Supabase Storage
-    const manifestPath = `${prefix}/tours/${tour.slug}/manifest.json`;
+    // Note: prefix already contains "tours", so just add slug
+    const manifestPath = `${prefix}/${tour.slug}/manifest.json`;
     const { error: uploadError } = await supabase.storage
       .from(bucket)
       .upload(manifestPath, JSON.stringify(tour, null, 2), {
@@ -40,7 +41,8 @@ export async function POST(req: NextRequest) {
     }
 
     // Update tours index
-    const indexPath = `${prefix}/tours/index.json`;
+    // Note: prefix already contains "tours"
+    const indexPath = `${prefix}/index.json`;
     let index = { tours: [] as any[] };
 
     try {
@@ -68,7 +70,7 @@ export async function POST(req: NextRequest) {
       locales: tour.locales || [],
       published: true,
       updatedAt: new Date().toISOString(),
-      manifestUrl: `${prefix}/tours/${tour.slug}/manifest.json`,
+      manifestUrl: `${prefix}/${tour.slug}/manifest.json`,
     };
 
     if (existingIndex >= 0) {

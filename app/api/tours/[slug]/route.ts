@@ -15,7 +15,8 @@ export async function GET(
     const supabase = getSupabaseAdmin();
 
     const { slug } = params;
-    const manifestPath = `${prefix}/tours/${slug}/manifest.json`;
+    // Note: prefix already contains "tours", so just add slug
+    const manifestPath = `${prefix}/${slug}/manifest.json`;
 
     try {
       // Download the manifest file from Supabase Storage
