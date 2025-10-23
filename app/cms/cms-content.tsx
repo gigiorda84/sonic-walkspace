@@ -1266,36 +1266,36 @@ export default function PageCMSContent() {
     setUploadingAudio(regionId);
 
     try {
-      // Convert file to base64 for API upload
-      const fileData = await new Promise<string>((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(reader.result as string);
-        reader.onerror = reject;
-        reader.readAsDataURL(file);
-      });
+      // Import Supabase client dynamically
+      const { createClient } = await import('@supabase/supabase-js');
 
-      // Upload to Supabase via API
-      const uploadRequest = {
-        slug: tour.slug || `tour-${tour.id}`,
-        locale: tour.locale || 'it-IT',
-        regionId: regionId,
-        fileName: file.name,
-        contentType: file.type || 'audio/mpeg',
-        fileData: fileData // Send base64 data directly
-      };
+      const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://kiwufyymymzuapbjatat.supabase.co';
+      const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'sb_publishable_VJG7Il93z4QAdV7EHHpB2Q_4fIBkHfy';
 
-      const uploadResponse = await fetch('/api/upload/sign', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(uploadRequest)
-      });
+      const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
-      if (!uploadResponse.ok) {
-        const errorData = await uploadResponse.text();
-        throw new Error(`Failed to upload: ${errorData}`);
+      // Build file path
+      const slug = tour.slug || `tour-${tour.id}`;
+      const locale = tour.locale || 'it-IT';
+      const ext = file.name.split('.').pop() || 'mp3';
+      const filePath = `tours/${slug}/${locale}/audio/${regionId}.${ext}`;
+
+      console.log(`📁 Upload path: ${filePath}`);
+
+      // Upload directly to Supabase from client
+      const { data, error } = await supabase.storage
+        .from('walkscape-audio')
+        .upload(filePath, file, {
+          contentType: file.type || 'audio/mpeg',
+          upsert: true, // Allow overwriting
+        });
+
+      if (error) {
+        throw new Error(`Supabase upload error: ${error.message}`);
       }
 
-      const { url: publicUrl, key } = await uploadResponse.json();
+      // Build public URL
+      const publicUrl = `${supabaseUrl}/storage/v1/object/public/walkscape-audio/${filePath}`;
 
       console.log(`✅ Audio uploaded successfully to Supabase: ${publicUrl}`);
 
@@ -1308,7 +1308,7 @@ export default function PageCMSContent() {
 
         // Store Supabase URL instead of data URL - no more localStorage quota issues!
         t.tracks[currentLocale][regionId].audioUrl = publicUrl; // Supabase public URL for playback
-        t.tracks[currentLocale][regionId].audioKey = key; // Storage path for management
+        t.tracks[currentLocale][regionId].audioKey = filePath; // Storage path for management
         t.tracks[currentLocale][regionId].audioFilename = file.name;
 
         // Remove any old data URL to save space
